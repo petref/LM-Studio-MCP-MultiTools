@@ -1,0 +1,6 @@
+{
+  "mcpEnabled": true,
+  "rootDir": "E:\\GIT\\AI\\GIT\\mcps3\\dist_patched",
+  "apiBase": "http://localhost:1234/v1",
+  "model": "openai/gpt-oss-20b"
+}

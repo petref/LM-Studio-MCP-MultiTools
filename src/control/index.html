@@ -1,0 +1,1142 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>MCP Chat UI</title>
+    <style>
+      :root {
+        color-scheme: dark light;
+      }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        background: #050505;
+        color: #f5f5f5;
+      }
+
+      /* --- Layout shell: sidebar + main in a grid --- */
+      .app-shell {
+        display: grid;
+        grid-template-columns: 320px minmax(0, 1fr);
+        height: 100dvh;
+        background: radial-gradient(circle at top left, #1c1c1c 0, #050505 60%);
+      }
+
+      /* Collapsed: hide sidebar, main gets full width */
+      .app-shell.sidebar-collapsed {
+        grid-template-columns: 0 minmax(0, 1fr);
+      }
+      .app-shell.sidebar-collapsed .sidebar {
+        transform: translateX(-100%);
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      /* --- Sidebar --- */
+      .sidebar {
+        background: rgba(10, 10, 10, 0.96);
+        border-right: 1px solid #222;
+        padding: 16px;
+        overflow: auto;
+        box-shadow: 4px 0 20px rgba(0, 0, 0, 0.45);
+        transition: transform 0.25s ease, opacity 0.25s ease;
+      }
+
+      .sidebar h3 {
+        margin-top: 0;
+      }
+
+      /* --- Main column --- */
+      .main {
+        min-width: 0; /* critical so children can shrink, no overflow onto sidebar */
+        display: flex;
+        flex-direction: column;
+        padding: 12px 16px 8px;
+      }
+
+      /* Top bar with burger */
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 8px;
+      }
+
+      .sidebar-toggle {
+        border-radius: 999px;
+        border: 1px solid #333;
+        background: #111;
+        color: #f0f0f0;
+        padding: 6px 10px;
+        font-size: 16px;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+      }
+      .sidebar-toggle span {
+        font-size: 13px;
+      }
+
+      .messages-wrapper {
+        flex: 1;
+        min-height: 0;
+        background: rgba(8, 8, 8, 0.96);
+        border-radius: 12px;
+        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
+        padding: 10px 12px;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .messages {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        padding: 4px;
+        background: linear-gradient(180deg, #050505 0, #111 40%, #050505 100%);
+        border-radius: 8px;
+      }
+
+      .composer {
+        display: flex;
+        gap: 8px;
+        padding: 10px 12px 4px;
+        border-top: 1px solid #222;
+        margin-top: 6px;
+      }
+
+      textarea {
+        flex: 1;
+        min-height: 56px;
+        padding: 8px;
+        border-radius: 8px;
+        border: 1px solid #444;
+        font-family: inherit;
+        background: #050505;
+        color: #f5f5f5;
+        resize: vertical;
+        word-break: break-word;
+      }
+      button {
+        padding: 8px 12px;
+        border-radius: 8px;
+        border: 1px solid #444;
+        background: linear-gradient(135deg, #222, #111);
+        color: #fff;
+        cursor: pointer;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+      }
+      button:hover {
+        background: linear-gradient(135deg, #2a2a2a, #151515);
+      }
+
+      /* File content as string card styling */
+      .file-result-card {
+        margin-top: 10px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.4);
+        border: 1px solid #333;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.55);
+      }
+
+      .file-result-title {
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 6px;
+        color: #ddd;
+      }
+
+      .file-result-card pre {
+        margin: 0;
+        max-height: 420px;
+        overflow: auto;
+        background: rgba(0, 0, 0, 0.6);
+        border-radius: 6px;
+        padding: 8px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        white-space: pre;
+      }
+
+      /* Bubbles (inside the collapsible box body) */
+      .bubble {
+        max-width: 900px;
+        margin: 8px 0;
+        padding: 12px;
+        border-radius: 12px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .user {
+        background: rgba(255, 255, 255, 0.04);
+      }
+      .assistant {
+        background: rgba(0, 120, 255, 0.15);
+      }
+
+      pre {
+        background: rgba(0, 0, 0, 0.35);
+        padding: 10px;
+        border-radius: 8px;
+        overflow: auto;
+      }
+
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      input[type="text"] {
+        width: 100%;
+        padding: 8px;
+        border-radius: 8px;
+        border: 1px solid #555;
+        background: #050505;
+        color: #f5f5f5;
+      }
+      .filebox {
+        width: 100%;
+        height: 180px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        background: #050505;
+        color: #f5f5f5;
+        border: 1px solid #555;
+        border-radius: 8px;
+      }
+      .pill {
+        padding: 4px 8px;
+        border-radius: 999px;
+        border: 1px solid #aaa;
+        font-size: 12px;
+      }
+      .ok {
+        border-color: #2f9e44;
+        color: #2f9e44;
+      }
+      .err {
+        border-color: #e03131;
+        color: #e03131;
+      }
+
+      /* Collapsible Q/A exchanges */
+      .exchange {
+        border-radius: 12px;
+        border: 1px solid #222;
+        margin-bottom: 12px;
+        background: #000000;
+        box-shadow: 0 1px 6px rgba(0, 0, 0, 0.55);
+      }
+      .exchange-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 10px;
+        cursor: pointer;
+        min-width: 0;
+      }
+      .exchange-header:hover {
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .exchange-question {
+        flex: 1;
+        font-weight: 500;
+        font-size: 14px;
+        padding-right: 8px;
+        overflow: hidden;
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2; /* at most 2 lines */
+        word-break: break-word;
+      }
+      .exchange-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-shrink: 0;
+      }
+      .exchange-toggle {
+        border: none;
+        background: transparent;
+        font-size: 16px;
+        cursor: pointer;
+        padding: 0 4px;
+        line-height: 1;
+        color: #f5f5f5;
+      }
+      .exchange-delete {
+        border: none;
+        background: transparent;
+        font-size: 14px;
+        cursor: pointer;
+        padding: 0 4px;
+        line-height: 1;
+        color: #e03131;
+      }
+      .exchange-delete:hover {
+        color: #ff4d4f;
+      }
+
+      /* NEW: per-box Retry button */
+      .exchange-retry {
+        border: none;
+        background: transparent;
+        font-size: 14px;
+        cursor: pointer;
+        padding: 0 4px;
+        line-height: 1;
+        color: #4dabf7;
+      }
+      .exchange-retry:hover {
+        color: #74c0fc;
+      }
+
+      .exchange-body {
+        padding: 4px 12px 10px;
+        border-top: 1px solid #222;
+        display: none; /* collapsed by default */
+      }
+
+      /* Stop button in exchange header */
+      .exchange-stop {
+        border: none;
+        background: transparent;
+        font-size: 13px;
+        cursor: pointer;
+        padding: 0 6px;
+        line-height: 1;
+        color: #ffb347;
+      }
+      .exchange-stop[disabled] {
+        cursor: default;
+        opacity: 0.6;
+      }
+
+      /* Small spinner shown while answer is pending */
+      .spinner {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 2px solid #aaa;
+        border-top-color: transparent;
+        animation: spin 0.8s linear infinite;
+        display: none;
+      }
+      .spinner.active {
+        display: inline-block;
+      }
+
+      .spinner.retrying {
+        border-color: #e0a800;
+        border-top-color: #e03131;
+      }
+      .retry-badge {
+        display: none;
+        color: #ffec99;
+        font-size: 14px;
+        font-weight: bold;
+        margin-left: 4px;
+      }
+      @keyframes spin {
+        from {
+          transform: rotate(0deg);
+        }
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      /* Tree view for repo_browser.print_tree */
+      .tool-tree-wrapper {
+        margin-top: 8px;
+        padding: 8px;
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.35);
+      }
+      .tree-title {
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 4px;
+        color: #ddd;
+      }
+      .tree-root,
+      .tree-root ul {
+        list-style: none;
+        margin: 2px 0;
+        padding-left: 16px;
+      }
+      .tree-item-label {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 13px;
+      }
+      .tree-dir > .tree-item-label::before {
+        content: "📁 ";
+      }
+      .tree-file > .tree-item-label::before {
+        content: "📄 ";
+      }
+
+      /* Responsive tweak: on narrow screens sidebar overlays full width */
+      @media (max-width: 800px) {
+        .app-shell {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .sidebar {
+          position: absolute;
+          left: 0;
+          top: 0;
+          bottom: 0;
+          width: 280px;
+          max-width: 80vw;
+          z-index: 10;
+        }
+        .app-shell.sidebar-collapsed {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell" id="appShell">
+      <div class="sidebar">
+        <h3>Settings</h3>
+        <div class="row">
+          <span id="llmHealth" class="pill">checking…</span>
+        </div>
+        <label>LLM API Base</label>
+        <input
+          id="apiBase"
+          type="text"
+          placeholder="http://127.0.0.1:1234/v1"
+        />
+        <label>Model</label>
+        <div class="row">
+          <select id="modelSelect" style="flex: 1"></select>
+          <button id="refreshModels">↻</button>
+        </div>
+        <label>Sandbox Root (MCP_ROOT_DIR)</label>
+        <input id="rootDir" type="text" placeholder="." />
+        <div class="row" style="margin-top: 8px">
+          <input id="mcpEnabled" type="checkbox" />
+          <label for="mcpEnabled">Enable MCP Tools</label>
+        </div>
+        <div class="row" style="margin-top: 8px">
+          <button id="saveState">Save</button>
+        </div>
+
+        <hr style="margin: 16px 0" />
+
+        <h3>File Editor</h3>
+        <input
+          id="filePath"
+          type="text"
+          placeholder="src/app.ts or README.md"
+        />
+        <div class="row" style="margin-top: 8px">
+          <button id="openFile">Open</button>
+          <button id="saveFile">Save</button>
+        </div>
+        <textarea
+          id="fileContent"
+          class="filebox"
+          placeholder="file content..."
+        ></textarea>
+        <div
+          id="fsStatus"
+          style="margin-top: 8px; font-size: 12px; color: #aaa"
+        ></div>
+      </div>
+
+      <div class="main">
+        <div class="topbar">
+          <button id="sidebarToggle" class="sidebar-toggle">
+            ☰ <span>Sidebar</span>
+          </button>
+        </div>
+
+        <div class="messages-wrapper">
+          <div id="messages" class="messages"></div>
+          <div class="composer">
+            <textarea id="prompt" placeholder="Type your message..."></textarea>
+            <button id="send">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const ui = {
+        apiBase: document.getElementById("apiBase"),
+        modelSelect: document.getElementById("modelSelect"),
+        rootDir: document.getElementById("rootDir"),
+        mcpEnabled: document.getElementById("mcpEnabled"),
+        saveState: document.getElementById("saveState"),
+        refreshModels: document.getElementById("refreshModels"),
+        llmHealth: document.getElementById("llmHealth"),
+        filePath: document.getElementById("filePath"),
+        fileContent: document.getElementById("fileContent"),
+        openFile: document.getElementById("openFile"),
+        saveFile: document.getElementById("saveFile"),
+        fsStatus: document.getElementById("fsStatus"),
+        messages: document.getElementById("messages"),
+        prompt: document.getElementById("prompt"),
+        send: document.getElementById("send"),
+        sidebarToggle: document.getElementById("sidebarToggle"),
+        appShell: document.getElementById("appShell"),
+      };
+
+      const state = { messages: [] };
+
+      // Sidebar toggle
+      ui.sidebarToggle.onclick = () => {
+        ui.appShell.classList.toggle("sidebar-collapsed");
+      };
+
+      // --- Markdown / rendering helpers ------------------------------------
+
+      function renderMarkdown(md) {
+        const parts = md.split(/```/g);
+        if (parts.length === 1) {
+          return (
+            "<div>" +
+            escapeHTML(md)
+              .split("\n")
+              .map((l) => (l.trim().length ? l : "&nbsp;"))
+              .join("<br/>") +
+            "</div>"
+          );
+        }
+        let html = "";
+        for (let i = 0; i < parts.length; i++) {
+          if (i % 2 === 0) {
+            html +=
+              "<div>" +
+              escapeHTML(parts[i])
+                .split("\n")
+                .map((l) => (l.trim().length ? l : "&nbsp;"))
+                .join("<br/>") +
+              "</div>";
+          } else {
+            const lines = parts[i].split("\n");
+            const first = lines[0].trim();
+            const lang = first && !parts[i].startsWith("\n") ? first : "";
+            const code = escapeHTML(lines.slice(lang ? 1 : 0).join("\n"));
+            html += `<pre><code data-lang="${lang}">${code}</code></pre><div style="margin-bottom:6px"><button onclick="copyPrev(this)">Copy</button></div>`;
+          }
+        }
+        return html;
+      }
+
+      function escapeHTML(s) {
+        return s.replace(
+          /[&<>]/g,
+          (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])
+        );
+      }
+
+      window.copyPrev = (btn) => {
+        const pre = btn.parentElement.previousElementSibling;
+        const code = pre?.querySelector("code")?.innerText || "";
+        navigator.clipboard.writeText(code);
+        btn.textContent = "Copied!";
+        setTimeout(() => (btn.textContent = "Copy"), 800);
+      };
+
+      function bubble(role, text, parent) {
+        const div = document.createElement("div");
+        div.className = "bubble " + (role === "user" ? "user" : "assistant");
+        div.innerHTML = renderMarkdown(text || "");
+        (parent || ui.messages).appendChild(div);
+        ui.messages.scrollTop = ui.messages.scrollHeight;
+        return div;
+      }
+
+      // Tree rendering
+      function renderTreeNode(node) {
+        const li = document.createElement("li");
+        li.className =
+          "tree-node " + (node.type === "dir" ? "tree-dir" : "tree-file");
+
+        const label = document.createElement("span");
+        label.className = "tree-item-label";
+        label.textContent =
+          node.name || (node.type === "dir" ? "." : "(root-file)");
+        li.appendChild(label);
+
+        if (node.type === "dir" && Array.isArray(node.children)) {
+          const ul = document.createElement("ul");
+          for (const child of node.children) {
+            ul.appendChild(renderTreeNode(child));
+          }
+          li.appendChild(ul);
+        }
+
+        return li;
+      }
+
+      function renderTree(rootNode) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "tool-tree-wrapper";
+
+        const title = document.createElement("div");
+        title.className = "tree-title";
+        title.textContent = "Folder structure (repo_browser.print_tree)";
+        wrapper.appendChild(title);
+
+        const ul = document.createElement("ul");
+        ul.className = "tree-root";
+        ul.appendChild(renderTreeNode(rootNode));
+        wrapper.appendChild(ul);
+
+        return wrapper;
+      }
+
+      // --- API helpers -----------------------------------------------------
+
+      const api = {
+        async getState() {
+          const r = await fetch("/state");
+          return r.json();
+        },
+        async saveState(patch) {
+          const r = await fetch("/state", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(patch),
+          });
+          return r.json();
+        },
+        async listModels() {
+          const r = await fetch("/models");
+          return r.json();
+        },
+        async openFile(path) {
+          const r = await fetch("/fs/read", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path }),
+          });
+          return r.json();
+        },
+        async saveFile(path, content) {
+          const r = await fetch("/fs/write", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path, content }),
+          });
+          return r.json();
+        },
+        // chatStream with AbortSignal + robust error handling
+        async *chatStream(messages, temperature = 0.2, signal) {
+          let r;
+          try {
+            r = await fetch("/chat", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                model: ui.modelSelect.value || undefined,
+                messages,
+                temperature,
+                stream: true,
+              }),
+              signal,
+            });
+          } catch (err) {
+            // Network / Abort errors
+            if (err && err.name === "AbortError") {
+              yield { type: "aborted" };
+              return;
+            }
+            yield {
+              type: "error",
+              message:
+                "fetch failed: " +
+                (err && err.message ? err.message : String(err)),
+            };
+            return;
+          }
+
+          // Non-200 responses → report as error and exit
+          if (!r.ok) {
+            let msg = `HTTP ${r.status}`;
+            try {
+              const body = await r.json();
+              if (body && body.error) msg += `: ${body.error}`;
+            } catch {
+              // ignore JSON parse error
+            }
+            yield { type: "error", message: msg };
+            return;
+          }
+
+          if (!r.body) {
+            yield { type: "error", message: "No response body from /chat" };
+            return;
+          }
+
+          const reader = r.body.getReader();
+          const decoder = new TextDecoder();
+          let accum = "";
+          let buffer = "";
+
+          const appendNew = (base, next) => {
+            if (!next) return base;
+            if (next.startsWith(base)) return base + next.slice(base.length);
+            const maxOverlap = Math.min(base.length, next.length);
+            for (let i = maxOverlap; i > 0; i--) {
+              if (base.endsWith(next.slice(0, i))) {
+                return base + next.slice(i);
+              }
+            }
+            return base + next;
+          };
+
+          try {
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+
+              buffer += decoder.decode(value, { stream: true });
+
+              let sepIndex;
+              while ((sepIndex = buffer.indexOf("\n\n")) !== -1) {
+                const rawEvent = buffer.slice(0, sepIndex);
+                buffer = buffer.slice(sepIndex + 2);
+
+                const lines = rawEvent
+                  .split("\n")
+                  .map((l) => l.trim())
+                  .filter(Boolean);
+
+                if (!lines.length) continue;
+
+                let eventType = "message";
+                let dataStr = "";
+
+                for (const line of lines) {
+                  if (line.startsWith("event:")) {
+                    eventType = line.slice(6).trim();
+                  } else if (line.startsWith("data:")) {
+                    if (dataStr) dataStr += "\n";
+                    dataStr += line.slice(5).trim();
+                  }
+                }
+
+                if (!dataStr) continue;
+
+                let payload;
+                try {
+                  payload = JSON.parse(dataStr);
+                } catch (e) {
+                  console.warn("Bad SSE JSON:", dataStr);
+                  continue;
+                }
+
+                if (eventType === "message") {
+                  const text =
+                    payload.text ||
+                    payload.content ||
+                    payload.delta?.content ||
+                    "";
+                  if (text) {
+                    accum = appendNew(accum, text);
+                    yield accum;
+                  }
+                } else if (eventType === "tool_result") {
+                  yield {
+                    isToolResult: true,
+                    tool: payload.tool,
+                    result: payload.result,
+                  };
+                } else if (eventType === "retry") {
+                  yield {
+                    type: "retry",
+                    attempt: payload.attempt,
+                    max: payload.max,
+                  };
+                } else if (eventType === "error") {
+                  const msg =
+                    payload.message || "Unexpected error from backend.";
+                  yield { type: "error", message: msg };
+                }
+              }
+            }
+
+            const tail = decoder.decode();
+            if (tail) {
+              buffer += tail;
+            }
+          } catch (err) {
+            if (err && err.name === "AbortError") {
+              // Aborted mid-stream
+              yield { type: "aborted" };
+              return;
+            }
+            console.error("Stream error:", err);
+            yield {
+              type: "error",
+              message:
+                err && err.message
+                  ? err.message
+                  : "Stream error while reading response",
+            };
+          } finally {
+            reader.releaseLock?.();
+          }
+        },
+      };
+
+      // --- Load state & models ---------------------------------------------
+
+      async function loadState() {
+        const s = await api.getState();
+        ui.apiBase.value = s.apiBase || "";
+        ui.rootDir.value = s.rootDir || ".";
+        ui.mcpEnabled.checked = !!s.mcpEnabled;
+
+        try {
+          const md = await api.listModels();
+          const list = md?.data || md?.models || [];
+          ui.modelSelect.innerHTML = "";
+          for (const m of list) {
+            const id = m.id || m.name || m.model;
+            if (!id) continue;
+            const opt = document.createElement("option");
+            opt.value = id;
+            opt.textContent = id;
+            ui.modelSelect.appendChild(opt);
+          }
+          if (
+            s.model &&
+            ![...ui.modelSelect.options].some((o) => o.value === s.model)
+          ) {
+            const opt = document.createElement("option");
+            opt.value = s.model;
+            opt.textContent = s.model + " (custom)";
+            ui.modelSelect.appendChild(opt);
+          }
+          ui.modelSelect.value = s.model || "";
+        } catch (e) {
+          console.warn(e);
+        }
+
+        try {
+          const r = await fetch("/models");
+          ui.llmHealth.className = "pill " + (r.ok ? "ok" : "err");
+          ui.llmHealth.textContent = r.ok ? "LLM: OK" : "LLM: DOWN";
+        } catch {
+          ui.llmHealth.className = "pill err";
+          ui.llmHealth.textContent = "LLM: DOWN";
+        }
+      }
+
+      ui.saveState.onclick = async () => {
+        await api.saveState({
+          apiBase: ui.apiBase.value,
+          model: ui.modelSelect.value,
+          rootDir: ui.rootDir.value,
+          mcpEnabled: ui.mcpEnabled.checked,
+        });
+        await loadState();
+      };
+      ui.refreshModels.onclick = async () => {
+        await loadState();
+      };
+
+      ui.openFile.onclick = async () => {
+        ui.fsStatus.textContent = "";
+        const p = ui.filePath.value.trim();
+        if (!p) return;
+        const r = await api.openFile(p);
+        if (r?.content !== undefined) {
+          ui.fileContent.value = r.content;
+          ui.fsStatus.textContent = "Opened.";
+        } else {
+          ui.fsStatus.textContent = "Open failed: " + (r?.error || "unknown");
+        }
+      };
+      ui.saveFile.onclick = async () => {
+        ui.fsStatus.textContent = "";
+        const p = ui.filePath.value.trim();
+        const c = ui.fileContent.value;
+        if (!p) return;
+        const r = await api.saveFile(p, c);
+        ui.fsStatus.textContent = r?.ok
+          ? "Saved."
+          : "Save failed: " + (r?.error || "unknown");
+      };
+
+      function collapseAllExchanges() {
+        const exchanges = ui.messages.querySelectorAll(".exchange");
+        exchanges.forEach((ex) => {
+          const body = ex.querySelector(".exchange-body");
+          const toggle = ex.querySelector(".exchange-toggle");
+          if (body && toggle) {
+            body.style.display = "none";
+            toggle.textContent = "▼";
+          }
+        });
+      }
+
+      // 🔁 Helper: start a new exchange (used by Send + per-box Retry)
+      async function startExchange(text) {
+        if (!text) return;
+
+        collapseAllExchanges();
+
+        state.messages.push({ role: "user", content: text });
+
+        const exchange = document.createElement("div");
+        exchange.className = "exchange";
+
+        const header = document.createElement("div");
+        header.className = "exchange-header";
+
+        const qSpan = document.createElement("div");
+        qSpan.className = "exchange-question";
+        qSpan.textContent = text;
+
+        const actions = document.createElement("div");
+        actions.className = "exchange-actions";
+
+        const spinner = document.createElement("div");
+        spinner.className = "spinner active";
+
+        const retryBadge = document.createElement("span");
+        retryBadge.className = "retry-badge";
+        retryBadge.textContent = "!";
+        retryBadge.style.display = "none";
+
+        const stopBtn = document.createElement("button");
+        stopBtn.className = "exchange-stop";
+        stopBtn.textContent = "⏹";
+        stopBtn.title = "Stop this response";
+
+        const retryBtn = document.createElement("button");
+        retryBtn.className = "exchange-retry";
+        retryBtn.textContent = "⟲";
+        retryBtn.title = "Retry this question";
+
+        const toggle = document.createElement("button");
+        toggle.className = "exchange-toggle";
+        toggle.textContent = "▲";
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.className = "exchange-delete";
+        deleteBtn.textContent = "✕";
+
+        actions.appendChild(spinner);
+        actions.appendChild(retryBadge);
+        actions.appendChild(stopBtn);
+        actions.appendChild(retryBtn);
+        actions.appendChild(toggle);
+        actions.appendChild(deleteBtn);
+
+        header.appendChild(qSpan);
+        header.appendChild(actions);
+
+        const body = document.createElement("div");
+        body.className = "exchange-body";
+        body.style.display = "block";
+
+        exchange.appendChild(header);
+        exchange.appendChild(body);
+
+        ui.messages.appendChild(exchange);
+        ui.messages.scrollTop = ui.messages.scrollHeight;
+
+        let opened = true;
+
+        const toggleBody = () => {
+          if (body.style.display === "none") {
+            body.style.display = "block";
+            toggle.textContent = "▲";
+            opened = true;
+          } else {
+            body.style.display = "none";
+            toggle.textContent = "▼";
+            opened = false;
+          }
+        };
+
+        header.onclick = toggleBody;
+        toggle.onclick = (e) => {
+          e.stopPropagation();
+          toggleBody();
+        };
+
+        deleteBtn.onclick = (e) => {
+          e.stopPropagation();
+          exchange.remove();
+        };
+
+        const ensureOpen = () => {
+          if (!opened) {
+            body.style.display = "block";
+            toggle.textContent = "▲";
+            opened = true;
+          }
+        };
+
+        // Retry button: spin up a brand-new exchange with the same question
+        retryBtn.onclick = (e) => {
+          e.stopPropagation();
+          // Optional: don't allow retry while this one is still streaming
+          if (spinner.classList.contains("active")) return;
+          startExchange(text);
+        };
+
+        bubble("user", text, body);
+        const assistantBubble = bubble("assistant", "", body);
+
+        let shown = "";
+        const controller = new AbortController();
+        let stopped = false;
+
+        stopBtn.onclick = (e) => {
+          e.stopPropagation();
+          if (stopped) return;
+          stopped = true;
+          controller.abort();
+          spinner.classList.remove("active");
+          stopBtn.disabled = true;
+          stopBtn.textContent = "Stopped";
+        };
+
+        try {
+          for await (const chunk of api.chatStream(
+            state.messages,
+            0.2,
+            controller.signal
+          )) {
+            // Aborted: show a neutral note and stop
+            if (chunk && chunk.type === "aborted") {
+              ensureOpen();
+              const note = document.createElement("div");
+              note.style.color = "#aaa";
+              note.textContent = "Request aborted.";
+              assistantBubble.appendChild(note);
+              break;
+            }
+
+            // Normal assistant text tokens
+            if (typeof chunk === "string") {
+              shown = chunk;
+              assistantBubble.innerHTML = renderMarkdown(shown);
+              ensureOpen();
+              ui.messages.scrollTop = ui.messages.scrollHeight;
+
+              // Tool results (print_tree, read_file, etc.)
+            } else if (chunk && chunk.isToolResult) {
+              ensureOpen();
+
+              if (chunk.tool === "repo_browser.print_tree" && chunk.result) {
+                const treeEl = renderTree(chunk.result);
+                assistantBubble.appendChild(treeEl);
+              } else if (
+                chunk.tool === "repo_browser.read_file" &&
+                typeof chunk.result === "string"
+              ) {
+                const card = document.createElement("div");
+                card.className = "file-result-card";
+
+                const title = document.createElement("div");
+                title.className = "file-result-title";
+                title.textContent = "File content (repo_browser.read_file)";
+                card.appendChild(title);
+
+                const pre = document.createElement("pre");
+                const code = document.createElement("code");
+                code.textContent = chunk.result;
+                pre.appendChild(code);
+                card.appendChild(pre);
+
+                assistantBubble.appendChild(card);
+              } else {
+                const card = document.createElement("div");
+                card.className = "file-result-card";
+
+                const title = document.createElement("div");
+                title.className = "file-result-title";
+                title.textContent = `Tool result: ${chunk.tool || "unknown"}`;
+                card.appendChild(title);
+
+                const pre = document.createElement("pre");
+                if (typeof chunk.result === "string") {
+                  pre.textContent = chunk.result;
+                } else {
+                  pre.textContent = JSON.stringify(chunk.result, null, 2);
+                }
+                card.appendChild(pre);
+
+                assistantBubble.appendChild(card);
+              }
+
+              ui.messages.scrollTop = ui.messages.scrollHeight;
+
+              // Error / retry events from backend / stream
+            } else if (chunk && chunk.type === "retry") {
+              retryBadge.style.display = "inline";
+              spinner.classList.add("retrying");
+              spinner.title = `Retrying ${chunk.attempt}/${chunk.max || ""}`;
+            } else if (chunk && chunk.type === "error") {
+              ensureOpen();
+              const errDiv = document.createElement("div");
+              errDiv.style.color = "#e03131";
+              errDiv.textContent =
+                chunk.message || "Unexpected error from backend.";
+              assistantBubble.appendChild(errDiv);
+              ui.messages.scrollTop = ui.messages.scrollHeight;
+            }
+          }
+        } catch (err) {
+          // Catch any uncaught error from chatStream
+          if (err && err.name === "AbortError") {
+            // Already handled as "aborted" above
+          } else {
+            ensureOpen();
+            const errDiv = document.createElement("div");
+            errDiv.style.color = "#e03131";
+            errDiv.textContent =
+              (err && err.message) ||
+              "Unexpected stream error while talking to backend.";
+            assistantBubble.appendChild(errDiv);
+            ui.messages.scrollTop = ui.messages.scrollHeight;
+          }
+        } finally {
+          spinner.classList.remove("active");
+          spinner.classList.remove("retrying");
+          if (typeof retryBadge !== "undefined") {
+            retryBadge.style.display = "none";
+          }
+        }
+
+        state.messages.push({ role: "assistant", content: shown });
+      }
+
+      // Send button now just delegates to startExchange
+      ui.send.onclick = () => {
+        const text = ui.prompt.value.trim();
+        if (!text) return;
+        ui.prompt.value = "";
+        startExchange(text);
+      };
+
+      loadState();
+    </script>
+  </body>
+</html>
+
+
+
+
+
+

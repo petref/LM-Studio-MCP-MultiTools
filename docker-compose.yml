@@ -1,0 +1,8 @@
+services:
+  mcps:
+    build: .
+    env_file: .env
+    # mount your working dir if needed
+    volumes:
+      - ./:/app
+    command: ["node", "dist/bridge/bridge.js"]

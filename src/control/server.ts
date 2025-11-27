@@ -55,7 +55,6 @@ const LM_BASE = (
 
 const LM_URL = `${LM_BASE}/chat/completions`;
 const LM_MAX_RETRIES = 5;
-const LM_RETRY_DELAY_MS = 1500;
 
 // Dashboard base (for calling our own MCP HTTP endpoints)
 const DASHBOARD_BASE =
@@ -64,7 +63,20 @@ const DASHBOARD_BASE =
 // -------------------------------------------------------------
 // SYSTEM PROMPT
 // -------------------------------------------------------------
-const SYSTEM_PROMPT = `
+const SYSTEM_PROMPT = (() => {
+  const rootDir = getRuntime().rootDir || ".";
+  return `
+You are a coding agent running inside an MCP environment.
+
+You DO have access to tools that can read and modify files in the current repo.
+Typical tools (names may vary) are:
+- repo_browser.print_tree(path)
+- repo_browser.read_file(path)
+- repo_browser.create_file(path, content)
+- repo_browser.create_directory(path)
+- repo_browser.apply_patch(path, patch)  // unified diff
+- repo_browser.rewrite_file(path, content)
+
 You are a local code assistant running inside an MCP environment.
 
 TOOLS:
@@ -74,8 +86,56 @@ TOOLS:
 - repo_browser.create_directory(path: string)
 - repo_browser.create_file(path: string, content: string)
 - repo_browser.rewrite_file(path: string, content: string)
+- heartbeat(keepalive: boolean, note?: string)
 
-CRITICAL RULES:
+LM STUDIO API:
+
+GET
+- /v1/models
+
+POST
+- /v1/responses
+- /v1/chat/completions
+- /v1/completions
+- /v1/embeddings
+
+
+GENERAL BEHAVIOR
+----------------
+- Always treat this as a real project, not a toy.
+- Never invent files, folders, or technologies that are not already in the repo or explicitly requested by the user.
+- Respect the existing architecture, style, and conventions.
+- Prefer minimal, focused changes over big rewrites.
+
+TOOL USAGE RULES
+----------------
+When the user asks for ANY change to the codebase:
+
+1. Inspect first
+   - If you don't know the file contents, call repo_browser.print_tree and repo_browser.read_file to see them.
+   - Do NOT guess what a file contains.
+
+2. Summarize + Plan
+   - Briefly summarize what the relevant files do.
+   - Outline a short plan (1–3 steps) for the change.
+
+3. Edit via tools
+   - Use repo_browser.apply_patch or repo_browser.rewrite_file to modify files.
+   - Patches must be valid unified diffs against the CURRENT content you just read.
+   - Only say “I updated X” AFTER you have actually called the tool.
+
+4. No fake changes
+   - Do NOT say “I added this button/file/logic” unless you just executed a tool call that really does that.
+   - If for some reason you cannot call the tools, say clearly: “Here is the patch you should apply manually” and do NOT pretend it is applied.
+
+PATCH STYLE
+-----------
+- Keep changes minimal and localized.
+- Preserve existing formatting, imports, and structure where possible.
+- Add comments only when they improve clarity or explain non-obvious logic.
+
+CRITICAL RULES
+--------------
 1. Use repo_browser.read_file when the user asks for:
    - "content of file"
    - "open file X"
@@ -92,6 +152,7 @@ CRITICAL RULES:
    Do NOT spam print_tree for the same path repeatedly.
 
 3. For EDITS you have two options:
+
    a) repo_browser.apply_patch (PATCH-BASED)
       - Use when you can express the change as a patch and want to touch only
         a small part of a file.
@@ -141,11 +202,36 @@ CRITICAL RULES:
      placeholder files (e.g. __init__.py, .gitkeep, README) unless the user
      explicitly asks for those files.
 
-The workspace root directory is  (currently: "${
-  getRuntime().rootDir || "."
-}").
+6. The heartbeat tool is a NO-OP that you can call sparingly in very long,
+   multi-step tool workflows to keep the LM Studio tool pipeline active and
+   to log progress with a short note.
+
+FLOW FOR THIS PROJECT
+---------------------
+For this repository in particular:
+
+- The main UI lives under ./src/control/index.html.
+- The backend proxy / bridge for the LLM lives under ./src/control/server.ts.
+- When the user asks for behavior that touches UI + server, you MUST:
+  1) Read ./context.md
+  2) Read ./src/control/index.html
+  3) Read ./src/control/server.ts
+  before proposing any patch.
+
+- When the user says “ok, proceed” or “apply this”, that means:
+  - Implement the plan using repo_browser.apply_patch or repo_browser.rewrite_file,
+  - Then show the final code snippets for the touched areas.
+
+HONESTY & SAFETY
+----------------
+- If you are unsure about the repo layout or tool names, ask or re-inspect with print_tree.
+- Never claim a patch is applied if you didn't call a tool.
+- If something fails or is ambiguous, explain the situation instead of improvising.
+
+The workspace root directory is the MCP rootDir (currently: "${rootDir}").
 Always treat paths as relative to this root.
 `.trim();
+})();
 
 // -------------------------------------------------------------
 // Helpers
@@ -169,6 +255,9 @@ let dashboardState: DashboardState = {
   rootDir: getRuntime().rootDir || ".",
   mcpEnabled: true,
 };
+
+// Tracks the currently running LM Studio chat request so /abort can cancel it.
+let activeLmAbortController: AbortController | null = null;
 
 async function withinRoot(rel: string) {
   const root = path.resolve(
@@ -270,6 +359,461 @@ async function readJsonBody(req: any): Promise<any> {
     });
     req.on("error", reject);
   });
+}
+
+// -------------------------------------------------------------
+// Types for chat engine
+// -------------------------------------------------------------
+type ToolExecutor = (toolName: string, args: any) => Promise<any>;
+
+type ChatPayload = {
+  model?: string;
+  messages: any[];
+  temperature?: number;
+  stream?: boolean;
+};
+
+type ChatContext = {
+  res: any;
+  lmAbort: AbortController;
+  effectiveModel: string;
+  payload: ChatPayload;
+  toolsPayload: any;
+  executeTool: ToolExecutor;
+};
+
+// -------------------------------------------------------------
+// Chat helpers (functional-ish / composable)
+// -------------------------------------------------------------
+
+function buildBaseMessages(userMessages: any[], currentRoot: string) {
+  return trimMessages([
+    {
+      role: "system",
+      content: SYSTEM_PROMPT.replace(
+        "workspace root directory is the MCP rootDir",
+        `workspace root directory is the MCP rootDir (currently: "${currentRoot}")`
+      ),
+    },
+    ...userMessages,
+  ]);
+}
+
+function startHeartbeat(res: any): NodeJS.Timeout {
+  return setInterval(() => {
+    try {
+      res.write("event: heartbeat\n");
+      res.write('data: { "keepalive": true }\n\n');
+    } catch (err) {
+      console.error("[chat] heartbeat write failed:", err);
+      // If writing fails, SSE is probably closing; we just stop heartbeats.
+    }
+  }, HEARTBEAT_MS);
+}
+
+function stopHeartbeat(timer: NodeJS.Timeout | null) {
+  if (!timer) return;
+  clearInterval(timer);
+}
+
+// Create a ToolExecutor bound to this response stream
+function createExecuteTool(res: any): ToolExecutor {
+  return async (toolName: string, args: any): Promise<any> => {
+    console.log("[mcp] executeTool hit:", toolName, "args:", args);
+
+    if (!toolName) {
+      const err = { error: "Missing tool name" };
+      res.write("event: tool_result\n");
+      res.write(
+        `data: ${JSON.stringify({
+          tool: toolName || "unknown",
+          result: err,
+        })}\n\n`
+      );
+      return err;
+    }
+
+    if (toolName === "repo_browser.print_tree") {
+      const tree = await listTree(args.path || "");
+      res.write("event: tool_result\n");
+      res.write(
+        `data: ${JSON.stringify({ tool: toolName, result: tree })}\n\n`
+      );
+      return tree;
+    }
+
+    if (toolName === "repo_browser.read_file") {
+      const data = await readFileSafe(args.path || "");
+      res.write("event: tool_result\n");
+      res.write(
+        `data: ${JSON.stringify({ tool: toolName, result: data })}\n\n`
+      );
+      return data;
+    }
+
+    if (toolName === "repo_browser.create_directory") {
+      const relPath = args.path || "";
+      const abs = await withinRoot(relPath);
+
+      await fs.mkdir(abs, { recursive: true });
+
+      const result = {
+        ok: true,
+        created: relPath,
+      };
+
+      res.write("event: tool_result\n");
+      res.write(`data: ${JSON.stringify({ tool: toolName, result })}\n\n`);
+      return result;
+    }
+
+    if (toolName === "repo_browser.create_file") {
+      const relPath = args.path || "";
+      const content = typeof args.content === "string" ? args.content : "";
+
+      const abs = await withinRoot(relPath);
+      const dir = path.dirname(abs);
+
+      // Ensure parent directory exists
+      await fs.mkdir(dir, { recursive: true });
+
+      await fs.writeFile(abs, content, "utf8");
+
+      const result = {
+        ok: true,
+        path: relPath,
+        bytes: Buffer.byteLength(content, "utf8"),
+      };
+
+      res.write("event: tool_result\n");
+      res.write(`data: ${JSON.stringify({ tool: toolName, result })}\n\n`);
+      return result;
+    }
+
+    if (toolName === "repo_browser.apply_patch") {
+      try {
+        const url = `${DASHBOARD_BASE}/mcp/apply_patch`;
+        console.log("[apply_patch] calling", url);
+
+        const r = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ patch: args.patch }),
+          //@ts-ignore
+          dispatcher: longLMAgent,
+        }).then((x) => x.json());
+
+        res.write("event: tool_result\n");
+        res.write(
+          `data: ${JSON.stringify({ tool: toolName, result: r })}\n\n`
+        );
+        return r;
+      } catch (e: any) {
+        const err = {
+          error: "Failed to call /mcp/apply_patch",
+          detail: String(e?.message || e),
+        };
+        console.error("[apply_patch] error:", err);
+        res.write("event: tool_result\n");
+        res.write(
+          `data: ${JSON.stringify({ tool: toolName, result: err })}\n\n`
+        );
+        return err;
+      }
+    }
+
+    if (toolName === "repo_browser.rewrite_file") {
+      try {
+        const url = `${DASHBOARD_BASE}/mcp/rewrite_file`;
+        console.log("[rewrite_file] calling", url);
+
+        const r = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            path: args.path,
+            content: args.content,
+          }),
+          //@ts-ignore
+          dispatcher: longLMAgent,
+        }).then((x) => x.json());
+
+        res.write("event: tool_result\n");
+        res.write(
+          `data: ${JSON.stringify({ tool: toolName, result: r })}\n\n`
+        );
+        return r;
+      } catch (e: any) {
+        const err = {
+          error: "Failed to call /mcp/rewrite_file",
+          detail: String(e?.message || e),
+        };
+        console.error("[rewrite_file] error:", err);
+        res.write("event: tool_result\n");
+        res.write(
+          `data: ${JSON.stringify({ tool: toolName, result: err })}\n\n`
+        );
+        return err;
+      }
+    }
+
+    const errUnknown = { error: "Unknown tool" };
+    res.write("event: tool_result\n");
+    res.write(
+      `data: ${JSON.stringify({
+        tool: toolName,
+        result: errUnknown,
+      })}\n\n`
+    );
+    return errUnknown;
+  };
+}
+
+// Core LM + tools loop, now parameterized by ChatContext
+async function runChatWithTools(
+  ctx: ChatContext,
+  messages: any[],
+  depth = 0
+): Promise<void> {
+  const {
+    res,
+    lmAbort,
+    effectiveModel,
+    payload,
+    toolsPayload,
+    executeTool,
+  } = ctx;
+
+  if (depth > MAX_TOOL_DEPTH) {
+    console.warn(
+      `[bridge] Exceeded MAX_TOOL_DEPTH=${MAX_TOOL_DEPTH}, aborting tool loop`
+    );
+    res.write("event: error\n");
+    res.write(
+      `data: ${JSON.stringify({
+        message: "Too many tool-call rounds, aborting.",
+      })}\n\n`
+    );
+    return;
+  }
+
+  let resp;
+  const lmUrlFromState = dashboardState.apiBase || LM_URL;
+
+  for (let attempt = 1; attempt <= LM_MAX_RETRIES; attempt++) {
+    try {
+      console.log(
+        `[bridge] LM chat attempt ${attempt}/${LM_MAX_RETRIES} → ${lmUrlFromState}`
+      );
+      resp = await fetch(lmUrlFromState, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: effectiveModel,
+          stream: true,
+          messages,
+          temperature: payload.temperature ?? 0.2,
+          ...toolsPayload,
+        }),
+        //@ts-ignore
+        dispatcher: longLMAgent,
+        signal: lmAbort.signal, // /abort will trigger this
+      });
+      if (resp.ok && resp.body) {
+        break;
+      } else {
+        console.error(
+          "[bridge] LM chat attempt failed:",
+          resp.status,
+          resp.statusText
+        );
+      }
+    } catch (err: any) {
+      // If /abort triggered this, don't retry.
+      if (err && err.name === "AbortError") {
+        console.log(
+          "[bridge] LM chat aborted via /abort; not retrying further attempts"
+        );
+        throw err;
+      }
+
+      console.error(
+        "[bridge] LM chat network error on attempt",
+        attempt,
+        err
+      );
+    }
+  }
+
+  if (!resp || !resp.ok || !resp.body) {
+    res.write("event: error\n");
+    res.write(
+      `data: ${JSON.stringify({
+        message: "Upstream LM fetch failed after retries",
+      })}\n\n`
+    );
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+
+  // collect streamed tool_calls (per index)
+  const toolBuffers: any[] = [];
+  let sawToolCalls = false;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    const chunk = decoder.decode(value, { stream: true });
+    const lines = chunk.split("\n");
+
+    for (const raw of lines) {
+      const ln = raw.trim();
+      if (!ln.startsWith("data:")) continue;
+
+      const jsonPart = ln.slice(5).trim();
+      if (!jsonPart || jsonPart === "[DONE]") continue;
+
+      let deltaObj: any;
+      try {
+        deltaObj = JSON.parse(jsonPart);
+      } catch {
+        // garbage / keep-alive lines from LM Studio, ignore
+        continue;
+      }
+
+      if (deltaObj.error) {
+        console.error("[LM ERROR]", deltaObj.error);
+        res.write("event: error\n");
+        res.write(
+          `data: ${JSON.stringify({
+            message: deltaObj.error.message || "LM Studio error",
+            raw: deltaObj.error,
+          })}\n\n`
+        );
+        continue;
+      }
+
+      const choice = deltaObj.choices?.[0];
+      const delta = choice?.delta || {};
+      const finishReason = choice?.finish_reason;
+
+      // --- TOOL CALL HANDLING -----------------------------
+      if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) {
+        sawToolCalls = true;
+
+        for (const tc of delta.tool_calls) {
+          const idx = (tc as any).index ?? 0;
+          if (!toolBuffers[idx]) {
+            toolBuffers[idx] = {
+              id: tc.id || undefined,
+              type: "function",
+              function: { name: "", arguments: "" },
+            };
+          }
+
+          const buf = toolBuffers[idx];
+          if (tc.id) buf.id = tc.id;
+          if (tc.function?.name) buf.function.name = tc.function.name;
+          if (typeof tc.function?.arguments === "string") {
+            buf.function.arguments += tc.function.arguments;
+          }
+        }
+
+        // When finish_reason === "tool_calls", we know first phase is done.
+        if (finishReason === "tool_calls") {
+          // Let the outer loop finish, we'll handle tools after.
+        }
+
+        // Do NOT emit normal text during the tool_call phase.
+        continue;
+      }
+      // ---------------------------------------------------
+
+      // Normal assistant text (no tool calls in this phase)
+      if (delta.content) {
+        const content = Array.isArray(delta.content)
+          ? delta.content
+              .map((c: any) => (typeof c === "string" ? c : c.text || ""))
+              .join("")
+          : delta.content;
+
+        if (content) {
+          res.write("event: message\n");
+          res.write(
+            `data: ${JSON.stringify({
+              role: "assistant",
+              text: content,
+            })}\n\n`
+          );
+        }
+      }
+    }
+  }
+
+  // If we saw tool_calls, execute tools, send tool messages,
+  // and then recursively call the model again to get final text.
+  if (sawToolCalls && toolBuffers.length > 0) {
+    const toolCallsForMsg: any[] = [];
+    const toolResultMessages: any[] = [];
+
+    for (let i = 0; i < toolBuffers.length; i++) {
+      const buf = toolBuffers[i];
+      if (!buf || !buf.function?.name) continue;
+
+      let parsedArgs: any;
+      try {
+        parsedArgs = JSON.parse(buf.function.arguments || "{}");
+      } catch {
+        parsedArgs = {};
+      }
+
+      const id = buf.id || `tool_call_${i}`;
+      const name = buf.function.name;
+
+      console.log("[tool-call complete]", {
+        name,
+        id,
+        args: parsedArgs,
+      });
+
+      const result = await executeTool(name, parsedArgs);
+
+      toolCallsForMsg.push({
+        id,
+        type: "function",
+        function: {
+          name,
+          arguments: JSON.stringify(parsedArgs),
+        },
+      });
+
+      toolResultMessages.push({
+        role: "tool",
+        tool_call_id: id,
+        name,
+        content: JSON.stringify(result),
+      });
+    }
+
+    if (toolCallsForMsg.length > 0) {
+      const assistantToolMessage = {
+        role: "assistant",
+        tool_calls: toolCallsForMsg,
+      };
+
+      const nextMessages = [
+        ...messages,
+        assistantToolMessage,
+        ...toolResultMessages,
+      ];
+
+      // Second phase: call the model again, now with tool results in context.
+      await runChatWithTools(ctx, nextMessages, depth + 1);
+    }
+  }
 }
 
 // -------------------------------------------------------------
@@ -529,488 +1073,116 @@ const longLMAgent = new Agent({
 });
 
 async function handleChat(req: any, res: any) {
-  let body = "";
-  req.on("data", (c: any) => (body += c));
-  req.on("end", async () => {
-    try {
-      const payload = body ? JSON.parse(body) : {};
-      const userMessages = payload.messages || [];
+  // Abort controller for this /chat → LM Studio request.
+  // It will ONLY be triggered explicitly via the /abort endpoint.
+  const lmAbort = new AbortController();
+  activeLmAbortController = lmAbort;
 
-      const currentRoot = dashboardState.rootDir || getRuntime().rootDir || ".";
+  let heartbeat: NodeJS.Timeout | null = null;
 
-      const baseMessages = trimMessages([
-        {
-          role: "system",
-          content: SYSTEM_PROMPT.replace(
-            "workspace root directory is the MCP rootDir",
-            `workspace root directory is the MCP rootDir (currently: "${currentRoot}")`
-          ),
-        },
-        ...userMessages,
-      ]);
+  try {
+    const payload: ChatPayload = await readJsonBody(req);
+    const userMessages = payload.messages || [];
 
-      let effectiveModel = payload.model || dashboardState.model || "default";
-      if (payload.model && payload.model !== dashboardState.model) {
-        dashboardState = { ...dashboardState, model: payload.model };
-      }
+    const currentRoot = dashboardState.rootDir || getRuntime().rootDir || ".";
+    const baseMessages = buildBaseMessages(userMessages, currentRoot);
 
-      // Prepare SSE response stream
-      res.statusCode = 200;
-      res.setHeader("Content-Type", "text/event-stream");
-      res.setHeader("Cache-Control", "no-cache");
-      res.setHeader("Connection", "keep-alive");
+    let effectiveModel = payload.model || dashboardState.model || "default";
+    if (payload.model && payload.model !== dashboardState.model) {
+      dashboardState = { ...dashboardState, model: payload.model };
+    }
 
-      res.flushHeaders();
-      res.setTimeout(0);
+    // Prepare SSE response stream
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
 
-      const heartbeat = setInterval(() => {
-        res.write("event: heartbeat\n");
-        res.write('data: { "keepalive": true }\n\n');
-      }, HEARTBEAT_MS);
+    res.flushHeaders();
+    res.setTimeout(0);
 
-      // Respect dashboardState.mcpEnabled (default true)
-      const mcpEnabled = dashboardState.mcpEnabled !== false;
-      const toolsPayload = mcpEnabled
-        ? {
-            tools: TOOLS,
-            tool_choice: "auto" as const,
-          }
-        : {};
+    heartbeat = startHeartbeat(res);
 
-      // --- TOOL EXECUTION (returns result for tool messages) ----
-      async function executeTool(toolName: string, args: any): Promise<any> {
-        console.log("[mcp] executeTool hit:", toolName, "args:", args);
-
-        if (!toolName) {
-          const err = { error: "Missing tool name" };
-          res.write("event: tool_result\n");
-          res.write(
-            `data: ${JSON.stringify({
-              tool: toolName || "unknown",
-              result: err,
-            })}\n\n`
-          );
-          return err;
+    // Respect dashboardState.mcpEnabled (default true)
+    const mcpEnabled = dashboardState.mcpEnabled !== false;
+    const toolsPayload = mcpEnabled
+      ? {
+          tools: TOOLS,
+          tool_choice: "auto" as const,
         }
+      : {};
 
-        if (toolName === "repo_browser.print_tree") {
-          const tree = await listTree(args.path || "");
-          res.write("event: tool_result\n");
-          res.write(
-            `data: ${JSON.stringify({ tool: toolName, result: tree })}\n\n`
-          );
-          return tree;
-        }
+    const executeTool = createExecuteTool(res);
 
-        if (toolName === "repo_browser.read_file") {
-          const data = await readFileSafe(args.path || "");
-          res.write("event: tool_result\n");
-          res.write(
-            `data: ${JSON.stringify({ tool: toolName, result: data })}\n\n`
-          );
-          return data;
-        }
+    const ctx: ChatContext = {
+      res,
+      lmAbort,
+      effectiveModel,
+      payload,
+      toolsPayload,
+      executeTool,
+    };
 
-        if (toolName === "repo_browser.create_directory") {
-          const relPath = args.path || "";
-          const abs = await withinRoot(relPath);
+    // Kick off the first phase
+    await runChatWithTools(ctx, baseMessages);
 
-          await fs.mkdir(abs, { recursive: true });
+    stopHeartbeat(heartbeat);
+    activeLmAbortController = null;
+    res.end();
+  } catch (e: any) {
+    activeLmAbortController = null;
+    stopHeartbeat(heartbeat);
 
-          const result = {
-            ok: true,
-            created: relPath,
-          };
-
-          res.write("event: tool_result\n");
-          res.write(`data: ${JSON.stringify({ tool: toolName, result })}\n\n`);
-          return result;
-        }
-
-        if (toolName === "repo_browser.create_file") {
-          const relPath = args.path || "";
-          const content = typeof args.content === "string" ? args.content : "";
-
-          const abs = await withinRoot(relPath);
-          const dir = path.dirname(abs);
-
-          // Ensure parent directory exists
-          await fs.mkdir(dir, { recursive: true });
-
-          await fs.writeFile(abs, content, "utf8");
-
-          const result = {
-            ok: true,
-            path: relPath,
-            bytes: Buffer.byteLength(content, "utf8"),
-          };
-
-          res.write("event: tool_result\n");
-          res.write(`data: ${JSON.stringify({ tool: toolName, result })}\n\n`);
-          return result;
-        }
-
-        if (toolName === "repo_browser.apply_patch") {
-          try {
-            const url = `${DASHBOARD_BASE}/mcp/apply_patch`;
-            console.log("[apply_patch] calling", url);
-
-            const r = await fetch(url, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ patch: args.patch }),
-              dispatcher: longLMAgent,
-            }).then((x) => x.json());
-
-            res.write("event: tool_result\n");
-            res.write(
-              `data: ${JSON.stringify({ tool: toolName, result: r })}\n\n`
-            );
-            return r;
-          } catch (e: any) {
-            const err = {
-              error: "Failed to call /mcp/apply_patch",
-              detail: String(e?.message || e),
-            };
-            console.error("[apply_patch] error:", err);
-            res.write("event: tool_result\n");
-            res.write(
-              `data: ${JSON.stringify({ tool: toolName, result: err })}\n\n`
-            );
-            return err;
-          }
-        }
-
-        if (toolName === "repo_browser.rewrite_file") {
-          try {
-            const url = `${DASHBOARD_BASE}/mcp/rewrite_file`;
-            console.log("[rewrite_file] calling", url);
-
-            const r = await fetch(url, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                path: args.path,
-                content: args.content,
-              }),
-              dispatcher: longLMAgent,
-            }).then((x) => x.json());
-
-            res.write("event: tool_result\n");
-            res.write(
-              `data: ${JSON.stringify({ tool: toolName, result: r })}\n\n`
-            );
-            return r;
-          } catch (e: any) {
-            const err = {
-              error: "Failed to call /mcp/rewrite_file",
-              detail: String(e?.message || e),
-            };
-            console.error("[rewrite_file] error:", err);
-            res.write("event: tool_result\n");
-            res.write(
-              `data: ${JSON.stringify({ tool: toolName, result: err })}\n\n`
-            );
-            return err;
-          }
-        }
-
-        const errUnknown = { error: "Unknown tool" };
-        res.write("event: tool_result\n");
-        res.write(
-          `data: ${JSON.stringify({
-            tool: toolName,
-            result: errUnknown,
-          })}\n\n`
-        );
-        return errUnknown;
-      }
-
-      // --- CORE LOOP: model ⇄ tools ⇄ model --------------------
-      const runChatWithTools = async (
-        messages: any[],
-        depth = 0
-      ): Promise<void> => {
-        if (depth > MAX_TOOL_DEPTH) {
-          console.warn(
-            `[bridge] Exceeded MAX_TOOL_DEPTH=${MAX_TOOL_DEPTH}, aborting tool loop`
-          );
-          res.write("event: error\n");
-          res.write(
-            `data: ${JSON.stringify({
-              message: "Too many tool-call rounds, aborting.",
-            })}\n\n`
-          );
-          return;
-        }
-
-        let resp;
-
-        // URL către model – folosește dashboardState.apiBase dacă e setat
-        const lmUrlFromState = dashboardState.apiBase || LM_URL;
-
-        for (let attempt = 1; attempt <= LM_MAX_RETRIES; attempt++) {
-          try {
-            console.log(
-              `[bridge] LM chat attempt ${attempt}/${LM_MAX_RETRIES} → ${lmUrlFromState}`
-            );
-            resp = await fetch(lmUrlFromState, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                model: effectiveModel,
-                stream: true,
-                messages,
-                temperature: payload.temperature ?? 0.2,
-                ...toolsPayload,
-              }),
-              dispatcher: longLMAgent,
-            });
-            if (resp.ok && resp.body) {
-              break;
-            } else {
-              console.error(
-                "[bridge] LM chat attempt failed:",
-                resp.status,
-                resp.statusText
-              );
-            }
-          } catch (err) {
-            console.error(
-              "[bridge] LM chat network error on attempt",
-              attempt,
-              err
-            );
-          }
-          if (attempt < LM_MAX_RETRIES) {
-            res.write(
-              "event: retry\n" +
-                `data: ${JSON.stringify({ attempt, max: LM_MAX_RETRIES })}\n\n`
-            );
-            await new Promise((r) => setTimeout(r, LM_RETRY_DELAY_MS));
-          }
-        }
-
-        if (!resp || !resp.ok || !resp.body) {
-          res.write("event: error\n");
-          res.write(
-            `data: ${JSON.stringify({
-              message: "Upstream LM fetch failed after retries",
-            })}\n\n`
-          );
-          return;
-        }
-
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder();
-
-        // collect streamed tool_calls (per index)
-        const toolBuffers: any[] = [];
-        let sawToolCalls = false;
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split("\n");
-
-          for (const raw of lines) {
-            const ln = raw.trim();
-            if (!ln.startsWith("data:")) continue;
-
-            const jsonPart = ln.slice(5).trim();
-            if (!jsonPart || jsonPart === "[DONE]") continue;
-
-            let deltaObj: any;
-            try {
-              deltaObj = JSON.parse(jsonPart);
-            } catch {
-              // garbage / keep-alive lines from LM Studio, ignore
-              continue;
-            }
-
-            if (deltaObj.error) {
-              console.error("[LM ERROR]", deltaObj.error);
-              res.write("event: error\n");
-              res.write(
-                `data: ${JSON.stringify({
-                  message: deltaObj.error.message || "LM Studio error",
-                  raw: deltaObj.error,
-                })}\n\n`
-              );
-              continue;
-            }
-
-            const choice = deltaObj.choices?.[0];
-            const delta = choice?.delta || {};
-            const finishReason = choice?.finish_reason;
-
-            // --- TOOL CALL HANDLING -----------------------------
-            if (
-              Array.isArray(delta.tool_calls) &&
-              delta.tool_calls.length > 0
-            ) {
-              sawToolCalls = true;
-
-              for (const tc of delta.tool_calls) {
-                const idx = (tc as any).index ?? 0;
-                if (!toolBuffers[idx]) {
-                  toolBuffers[idx] = {
-                    id: tc.id || undefined,
-                    type: "function",
-                    function: { name: "", arguments: "" },
-                  };
-                }
-
-                const buf = toolBuffers[idx];
-                if (tc.id) buf.id = tc.id;
-                if (tc.function?.name) buf.function.name = tc.function.name;
-                if (typeof tc.function?.arguments === "string") {
-                  buf.function.arguments += tc.function.arguments;
-                }
-              }
-
-              // When finish_reason === "tool_calls", we know first phase is done.
-              if (finishReason === "tool_calls") {
-                // Let the outer loop finish, we'll handle tools after.
-              }
-
-              // Do NOT emit normal text during the tool_call phase.
-              continue;
-            }
-            // ---------------------------------------------------
-
-            // Normal assistant text (no tool calls in this phase)
-            if (delta.content) {
-              const content = Array.isArray(delta.content)
-                ? delta.content
-                    .map((c: any) => (typeof c === "string" ? c : c.text || ""))
-                    .join("")
-                : delta.content;
-
-              if (content) {
-                res.write("event: message\n");
-                res.write(
-                  `data: ${JSON.stringify({
-                    role: "assistant",
-                    text: content,
-                  })}\n\n`
-                );
-              }
-            }
-          }
-        }
-
-        // If we saw tool_calls, execute tools, send tool messages,
-        // and then recursively call the model again to get final text.
-        if (sawToolCalls && toolBuffers.length > 0) {
-          const toolCallsForMsg: any[] = [];
-          const toolResultMessages: any[] = [];
-
-          for (let i = 0; i < toolBuffers.length; i++) {
-            const buf = toolBuffers[i];
-            if (!buf || !buf.function?.name) continue;
-
-            let parsedArgs: any;
-            try {
-              parsedArgs = JSON.parse(buf.function.arguments || "{}");
-            } catch {
-              parsedArgs = {};
-            }
-
-            const id = buf.id || `tool_call_${i}`;
-            const name = buf.function.name;
-
-            console.log("[tool-call complete]", {
-              name,
-              id,
-              args: parsedArgs,
-            });
-
-            const result = await executeTool(name, parsedArgs);
-
-            toolCallsForMsg.push({
-              id,
-              type: "function",
-              function: {
-                name,
-                arguments: JSON.stringify(parsedArgs),
-              },
-            });
-
-            toolResultMessages.push({
-              role: "tool",
-              tool_call_id: id,
-              name,
-              content: JSON.stringify(result),
-            });
-          }
-
-          if (toolCallsForMsg.length > 0) {
-            const assistantToolMessage = {
-              role: "assistant",
-              tool_calls: toolCallsForMsg,
-            };
-
-            const nextMessages = [
-              ...messages,
-              assistantToolMessage,
-              ...toolResultMessages,
-            ];
-
-            // Second phase: call the model again, now with tool results in context.
-            await runChatWithTools(nextMessages, depth + 1);
-          }
-        }
-      };
-
-      // Kick off the first phase
-      await runChatWithTools(baseMessages);
-
-      clearInterval(heartbeat);
-      res.end();
-    } catch (e: any) {
+    // AbortError here means /abort was called.
+    if (e && e.name === "AbortError") {
+      console.log("[chat] LM request aborted via /abort");
       try {
-        res.write("event: error\n");
-        res.write(
-          `data: ${JSON.stringify({
-            message: e.message || "Internal error",
-          })}\n\n`
-        );
-        res.end();
-      } catch (e: any) {
-        console.error("handleChat error in end callback:", e);
-
-        // If we’re already in SSE mode (headers sent), only send an SSE error event.
-        if (res.headersSent) {
-          try {
-            res.write(`event: error\n`);
-            res.write(
-              `data: ${JSON.stringify({
-                message: e?.message || "internal error",
-              })}\n\n`
-            );
-          } catch (writeErr) {
-            console.error("Failed to write SSE error event:", writeErr);
-            // At this point the connection is basically dead; just stop.
-          }
-          return;
+        if (!res.headersSent) {
+          res.end();
         }
+      } catch {
+        // ignore
+      }
+      return;
+    }
 
-        // If we never got to SSE headers, fall back to a normal JSON 500
+    try {
+      res.write("event: error\n");
+      res.write(
+        `data: ${JSON.stringify({
+          message: e.message || "Internal error",
+        })}\n\n`
+      );
+      res.end();
+    } catch (err: any) {
+      console.error("handleChat error in end callback:", err);
+      // If we’re already in SSE mode (headers sent), only send an SSE error event
+      if (res.headersSent) {
         try {
-          json(
-            res,
-            { error: e?.message || "Internal error (before stream)" },
-            500
+          res.write(`event: error\n`);
+          res.write(
+            `data: ${JSON.stringify({
+              message: err?.message || "internal error",
+            })}\n\n`
           );
         } catch (writeErr) {
-          console.error("Failed to send JSON 500 from handleChat:", writeErr);
+          console.error("Failed to write SSE error event:", writeErr);
+          // At this point the connection is basically dead; just stop.
         }
+        return;
+      }
+
+      try {
+        json(
+          res,
+          { error: err?.message || "Internal error (before stream)" },
+          500
+        );
+      } catch (writeErr) {
+        console.error("Failed to send JSON 500 from handleChat:", writeErr);
       }
     }
-  });
+  }
 }
 
 // -------------------------------------------------------------
@@ -1066,6 +1238,18 @@ const server = createServer(async (req, res) => {
     } catch (e: any) {
       res.statusCode = 500;
       return res.end("Failed to load dashboard index.html: " + e.message);
+    }
+  }
+
+  // Abort the current LM Studio chat request
+  if (req.method === "POST" && req.url === "/abort") {
+    if (activeLmAbortController) {
+      activeLmAbortController.abort();
+      activeLmAbortController = null;
+      return json(res, { ok: true, aborted: true });
+    } else {
+      // Nothing running, but still respond OK so the UI doesn’t freak out
+      return json(res, { ok: true, aborted: false });
     }
   }
 

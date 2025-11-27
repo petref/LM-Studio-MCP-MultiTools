@@ -647,7 +647,6 @@
                 temperature,
                 stream: true,
               }),
-              signal,
             });
           } catch (err) {
             // Network / Abort errors
@@ -1001,16 +1000,25 @@
         const controller = new AbortController();
         let stopped = false;
 
-        stopBtn.onclick = (e) => {
+        stopBtn.onclick = async (e) => {
           e.stopPropagation();
           if (stopped) return;
           stopped = true;
+
+          // 1) Tell backend to abort LM Studio stream
+          try {
+            await fetch("/abort", { method: "POST" });
+          } catch (err) {
+            console.warn("Failed to send abort to backend:", err);
+          }
+
+          // 2) Locally stop processing this stream
           controller.abort();
+
           spinner.classList.remove("active");
           stopBtn.disabled = true;
           stopBtn.textContent = "Stopped";
         };
-
         try {
           for await (const chunk of api.chatStream(
             state.messages,
@@ -1134,9 +1142,3 @@
     </script>
   </body>
 </html>
-
-
-
-
-
-

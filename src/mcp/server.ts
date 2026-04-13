@@ -31,11 +31,13 @@ async function withinRoot(getRoot: GetRootFn, relPath: string): Promise<string> 
   const rel = relPath && relPath.trim() ? relPath : ".";
   const abs = path.resolve(ROOT, rel);
 
-  // Windows-safe + normalization-safe check
-  const rootNorm = path.normalize(ROOT).toLowerCase();
-  const absNorm = path.normalize(abs).toLowerCase();
+  const rootNorm = path.normalize(ROOT);
+  const absNorm = path.normalize(abs);
+  const rootCmp = process.platform === "win32" ? rootNorm.toLowerCase() : rootNorm;
+  const absCmp = process.platform === "win32" ? absNorm.toLowerCase() : absNorm;
+  const relFromRoot = path.relative(rootCmp, absCmp);
 
-  if (!absNorm.startsWith(rootNorm)) {
+  if (relFromRoot.startsWith("..") || path.isAbsolute(relFromRoot)) {
     throw new Error(
       `Refusing to write outside root. rel="${relPath}", root="${ROOT}"`
     );
@@ -115,7 +117,7 @@ export function parseSimplifiedPatch(raw: string): ParsedPatch {
     return { op: "add", path: filePath, hunks: [], newContent: final };
   }
 
-  const hunkHeader = /^@@ -(\d+),(\d+) \+(\d+),(\d+) @@/;
+  const hunkHeader = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
   const hunks: PatchHunk[] = [];
   let current: PatchHunk | null = null;
 
@@ -124,8 +126,8 @@ export function parseSimplifiedPatch(raw: string): ParsedPatch {
     if (m) {
       if (current) hunks.push(current);
       current = {
-        oldRange: { start: Number(m[1]), count: Number(m[2]) },
-        newRange: { start: Number(m[3]), count: Number(m[4]) },
+        oldRange: { start: Number(m[1]), count: Number(m[2] || "1") },
+        newRange: { start: Number(m[3]), count: Number(m[4] || "1") },
         lines: [],
       };
       continue;
@@ -143,6 +145,9 @@ export function parseSimplifiedPatch(raw: string): ParsedPatch {
   }
 
   if (current) hunks.push(current);
+  if (hunks.length === 0) {
+    throw new Error("Update patch contains no valid hunks");
+  }
   return { op: "update", path: filePath, hunks };
 }
 
@@ -174,10 +179,24 @@ async function applyParsedPatch(getRoot: GetRootFn, parsed: ParsedPatch): Promis
 
   for (const h of parsed.hunks) {
     const start = h.oldRange.start - 1;
+    if (start < 0 || start > lines.length) {
+      throw new Error(`Invalid hunk start ${h.oldRange.start} for file "${parsed.path}"`);
+    }
 
+    const expectedOld: string[] = [];
     const replace: string[] = [];
     for (const ln of h.lines) {
-      if (ln.type === "add" || ln.type === "context") replace.push(ln.text);
+      if (ln.type === "context" || ln.type === "remove") expectedOld.push(ln.text);
+      if (ln.type === "context" || ln.type === "add") replace.push(ln.text);
+    }
+
+    const actualOld = lines.slice(start, start + h.oldRange.count);
+    if (
+      expectedOld.length !== h.oldRange.count ||
+      expectedOld.length !== actualOld.length ||
+      expectedOld.some((v, i) => v !== actualOld[i])
+    ) {
+      throw new Error(`Patch hunk context mismatch for "${parsed.path}" at line ${h.oldRange.start}`);
     }
 
     lines.splice(start, h.oldRange.count, ...replace);

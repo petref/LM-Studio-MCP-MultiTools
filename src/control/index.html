@@ -117,6 +117,74 @@
       padding: 10px 12px 4px;
       border-top: 1px solid #222;
       margin-top: 6px;
+      align-items: flex-end;
+    }
+
+    .composer-side {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      align-items: flex-end;
+      min-width: 190px;
+    }
+
+    .attach-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .add-menu-wrap {
+      position: relative;
+    }
+
+    .add-btn {
+      width: 34px;
+      height: 34px;
+      border-radius: 999px;
+      border: 1px solid #3a3a3a;
+      background: linear-gradient(135deg, #1b1b1b, #0f0f0f);
+      color: #f5f5f5;
+      font-size: 22px;
+      line-height: 1;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .add-menu {
+      position: absolute;
+      right: 0;
+      bottom: 42px;
+      min-width: 150px;
+      background: #0e0e0e;
+      border: 1px solid #2c2c2c;
+      border-radius: 10px;
+      padding: 6px;
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+      display: none;
+      z-index: 30;
+    }
+
+    .add-menu.open {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .add-menu button {
+      width: 100%;
+      text-align: left;
+    }
+
+    .attach-preview {
+      display: none;
+      max-width: 180px;
+      max-height: 120px;
+      border-radius: 8px;
+      border: 1px solid #333;
+      object-fit: cover;
     }
 
     textarea {
@@ -223,6 +291,61 @@
       color: #f5f5f5;
       border: 1px solid #555;
       border-radius: 8px;
+    }
+
+    .perf-panel {
+      margin-top: 12px;
+      border: 1px solid #2f2f2f;
+      border-radius: 10px;
+      padding: 8px;
+      background: rgba(0, 0, 0, 0.25);
+    }
+
+    .perf-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .perf-status {
+      font-size: 12px;
+      color: #bbb;
+    }
+
+    .perf-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .perf-card {
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      padding: 6px;
+      background: rgba(0, 0, 0, 0.3);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .perf-card-title {
+      font-weight: 600;
+      margin-bottom: 4px;
+      color: #ddd;
+    }
+
+    .perf-recent {
+      max-height: 180px;
+      overflow: auto;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      padding: 6px;
+      background: rgba(0, 0, 0, 0.3);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      white-space: pre-wrap;
     }
 
     .pill {
@@ -483,6 +606,16 @@
       </div>
       <textarea id="fileContent" class="filebox" placeholder="file content..."></textarea>
       <div id="fsStatus" style="margin-top: 8px; font-size: 12px; color: #aaa"></div>
+
+      <div class="perf-panel">
+        <div class="perf-toolbar">
+          <h3 style="margin:0">Perf</h3>
+          <button id="perfRefresh" type="button">Refresh</button>
+        </div>
+        <div id="perfStatus" class="perf-status">Loading…</div>
+        <div id="perfSummary" class="perf-grid"></div>
+        <div id="perfRecent" class="perf-recent"></div>
+      </div>
     </div>
 
     <div class="main">
@@ -496,7 +629,18 @@
         <div id="messages" class="messages"></div>
         <div class="composer">
           <textarea id="prompt" placeholder="Type your message..."></textarea>
-          <button id="send">Send</button>
+          <div class="composer-side">
+            <div class="add-menu-wrap">
+              <button id="addMenuBtn" class="add-btn" type="button">+</button>
+              <div id="addMenu" class="add-menu">
+                <button id="addImageBtn" type="button">Add image</button>
+                <button id="removeImageBtn" type="button">Remove image</button>
+              </div>
+              <input id="imageInput" type="file" accept="image/*" style="display:none" />
+            </div>
+            <img id="imagePreview" class="attach-preview" alt="image preview" />
+            <button id="send">Send</button>
+          </div>
         </div>
       </div>
     </div>
@@ -519,14 +663,29 @@
       openFile: document.getElementById("openFile"),
       saveFile: document.getElementById("saveFile"),
       fsStatus: document.getElementById("fsStatus"),
+      perfRefresh: document.getElementById("perfRefresh"),
+      perfStatus: document.getElementById("perfStatus"),
+      perfSummary: document.getElementById("perfSummary"),
+      perfRecent: document.getElementById("perfRecent"),
       messages: document.getElementById("messages"),
       prompt: document.getElementById("prompt"),
       send: document.getElementById("send"),
       sidebarToggle: document.getElementById("sidebarToggle"),
       appShell: document.getElementById("appShell"),
+      imageInput: document.getElementById("imageInput"),
+      addMenuBtn: document.getElementById("addMenuBtn"),
+      addMenu: document.getElementById("addMenu"),
+      addImageBtn: document.getElementById("addImageBtn"),
+      removeImageBtn: document.getElementById("removeImageBtn"),
+      imagePreview: document.getElementById("imagePreview"),
     };
 
     const state = { messages: [] };
+    const pendingAttachment = { dataUrl: "", name: "" };
+    const markdownCache = new Map();
+    const MAX_MARKDOWN_CACHE = 200;
+    let perfPollingHandle = null;
+    let perfUnavailable = false;
 
     // Sidebar toggle
     ui.sidebarToggle.onclick = () => {
@@ -535,7 +694,7 @@
 
     // --- Markdown / rendering helpers ------------------------------------
 
-    function renderMarkdown(md) {
+    function renderMarkdownUncached(md) {
       const parts = md.split(/```/g);
       if (parts.length === 1) {
         return (
@@ -568,6 +727,30 @@
       return html;
     }
 
+    function hashString(input) {
+      let h = 2166136261 >>> 0;
+      for (let i = 0; i < input.length; i++) {
+        h ^= input.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+      }
+      return (h >>> 0).toString(16);
+    }
+
+    function renderMarkdown(md) {
+      const text = md || "";
+      const key = `${text.length}:${hashString(text)}`;
+      const cached = markdownCache.get(key);
+      if (cached && cached.src === text) return cached.html;
+
+      const html = renderMarkdownUncached(text);
+      markdownCache.set(key, { src: text, html });
+      if (markdownCache.size > MAX_MARKDOWN_CACHE) {
+        const oldestKey = markdownCache.keys().next().value;
+        markdownCache.delete(oldestKey);
+      }
+      return html;
+    }
+
     function escapeHTML(s) {
       return s.replace(
         /[&<>]/g,
@@ -590,6 +773,55 @@
       (parent || ui.messages).appendChild(div);
       ui.messages.scrollTop = ui.messages.scrollHeight;
       return div;
+    }
+
+    function clearAttachment() {
+      pendingAttachment.dataUrl = "";
+      pendingAttachment.name = "";
+      if (ui.imageInput) ui.imageInput.value = "";
+      if (ui.imagePreview) {
+        ui.imagePreview.src = "";
+        ui.imagePreview.style.display = "none";
+      }
+      if (ui.removeImageBtn) ui.removeImageBtn.disabled = true;
+    }
+
+    function closeAddMenu() {
+      if (ui.addMenu) ui.addMenu.classList.remove("open");
+    }
+
+    function openAddMenu() {
+      if (!ui.addMenu) return;
+      if (pendingAttachment.dataUrl && ui.removeImageBtn) {
+        ui.removeImageBtn.disabled = false;
+      } else if (ui.removeImageBtn) {
+        ui.removeImageBtn.disabled = true;
+      }
+      ui.addMenu.classList.add("open");
+    }
+
+    function buildUserMessage(text, imageDataUrl) {
+      const trimmed = (text || "").trim();
+      if (!imageDataUrl) return { role: "user", content: trimmed };
+      const parts = [];
+      if (trimmed) parts.push({ type: "text", text: trimmed });
+      parts.push({ type: "image_url", image_url: { url: imageDataUrl } });
+      return { role: "user", content: parts };
+    }
+
+    function renderUserPrompt(userBubble, text, imageDataUrl) {
+      if (imageDataUrl) {
+        const img = document.createElement("img");
+        img.src = imageDataUrl;
+        img.alt = "attached image";
+        img.style.maxWidth = "320px";
+        img.style.maxHeight = "240px";
+        img.style.display = "block";
+        img.style.marginTop = "8px";
+        img.style.borderRadius = "8px";
+        img.style.border = "1px solid #333";
+        userBubble.appendChild(img);
+      }
     }
 
     // Tree rendering
@@ -665,6 +897,11 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ path, content }),
         });
+        return r.json();
+      },
+      async getPerf(limit = 120) {
+        const r = await fetch(`/perf?limit=${limit}`);
+        if (r.status === 404) return { ok: false, missing: true };
         return r.json();
       },
       // chatStream with AbortSignal + robust error handling
@@ -829,6 +1066,72 @@
 
     // --- Load state & models ---------------------------------------------
 
+    function fmtMs(v) {
+      if (typeof v !== "number" || !Number.isFinite(v)) return "-";
+      return `${v.toFixed(1)} ms`;
+    }
+
+    function renderPerfCard(title, stats) {
+      const div = document.createElement("div");
+      div.className = "perf-card";
+      div.innerHTML =
+        `<div class="perf-card-title">${escapeHTML(title)}</div>` +
+        `count: ${stats.count || 0}<br/>` +
+        `avg: ${fmtMs(stats.avgMs)}<br/>` +
+        `p95: ${fmtMs(stats.p95Ms)}<br/>` +
+        `max: ${fmtMs(stats.maxMs)}<br/>` +
+        `last: ${fmtMs(stats.lastMs)}`;
+      return div;
+    }
+
+    function eventTime(ts) {
+      if (!ts) return "--:--:--";
+      const d = new Date(ts);
+      return d.toLocaleTimeString();
+    }
+
+    async function refreshPerfPanel() {
+      if (perfUnavailable) return;
+      try {
+        const perf = await api.getPerf(120);
+        if (!perf?.ok) {
+          if (perf?.missing) {
+            perfUnavailable = true;
+            ui.perfStatus.textContent = "Perf endpoint not available on this backend build.";
+            if (perfPollingHandle) {
+              clearInterval(perfPollingHandle);
+              perfPollingHandle = null;
+            }
+            return;
+          }
+          ui.perfStatus.textContent = "Perf endpoint unavailable.";
+          return;
+        }
+
+        const summary = perf.summary || {};
+        ui.perfSummary.innerHTML = "";
+        ui.perfSummary.appendChild(renderPerfCard("chat.request", summary.chatRequest || {}));
+        ui.perfSummary.appendChild(renderPerfCard("chat.round", summary.chatRound || {}));
+        ui.perfSummary.appendChild(renderPerfCard("tool.call", summary.toolCall || {}));
+        ui.perfSummary.appendChild(renderPerfCard("tree.list", summary.treeList || {}));
+
+        const recent = Array.isArray(perf.recent) ? perf.recent.slice(-20).reverse() : [];
+        ui.perfRecent.textContent = recent.length
+          ? recent
+            .map((e) => {
+              const details = e?.details ? JSON.stringify(e.details) : "{}";
+              return `[${eventTime(e.ts)}] ${e.event} ${details}`;
+            })
+            .join("\n")
+          : "No perf events yet.";
+
+        const mode = perf.enabledConsoleLogs ? "console logs ON" : "console logs OFF";
+        ui.perfStatus.textContent = `Events: ${perf.totalEvents || 0}/${perf.maxEvents || "?"} (${mode})`;
+      } catch (e) {
+        ui.perfStatus.textContent = "Failed to load perf metrics.";
+      }
+    }
+
     async function loadState() {
       const s = await api.getState();
       ui.apiBase.value = s.apiBase || "";
@@ -869,6 +1172,8 @@
         ui.llmHealth.className = "pill err";
         ui.llmHealth.textContent = "LLM: DOWN";
       }
+
+      await refreshPerfPanel();
     }
 
     ui.saveState.onclick = async () => {
@@ -882,6 +1187,9 @@
     };
     ui.refreshModels.onclick = async () => {
       await loadState();
+    };
+    ui.perfRefresh.onclick = async () => {
+      await refreshPerfPanel();
     };
 
     // Folder picker -> populate rootDir with selected folder name
@@ -948,12 +1256,13 @@
     }
 
     // 🔁 Helper: start a new exchange (used by Send + per-box Retry)
-    async function startExchange(text) {
-      if (!text) return;
+    async function startExchange({ text, imageDataUrl }) {
+      if (!text && !imageDataUrl) return;
 
       collapseAllExchanges();
 
-      state.messages.push({ role: "user", content: text });
+      const userMessage = buildUserMessage(text, imageDataUrl);
+      state.messages.push(userMessage);
 
       const exchange = document.createElement("div");
       exchange.className = "exchange";
@@ -963,7 +1272,7 @@
 
       const qSpan = document.createElement("div");
       qSpan.className = "exchange-question";
-      qSpan.textContent = text;
+      qSpan.textContent = text || (imageDataUrl ? "[Image]" : "");
 
       const actions = document.createElement("div");
       actions.className = "exchange-actions";
@@ -1052,15 +1361,32 @@
         e.stopPropagation();
         // Optional: don't allow retry while this one is still streaming
         if (spinner.classList.contains("active")) return;
-        startExchange(text);
+        startExchange({ text, imageDataUrl });
       };
 
-      bubble("user", text, body);
+      const userBubble = bubble("user", text || (imageDataUrl ? "[Image attached]" : ""), body);
+      renderUserPrompt(userBubble, text, imageDataUrl);
       const assistantBubble = bubble("assistant", "", body);
 
       let shown = "";
+      let pendingShown = "";
+      let renderTimer = null;
       const controller = new AbortController();
       let stopped = false;
+
+      const flushRender = () => {
+        renderTimer = null;
+        if (pendingShown === shown) return;
+        shown = pendingShown;
+        assistantBubble.innerHTML = renderMarkdown(shown);
+        ensureOpen();
+        ui.messages.scrollTop = ui.messages.scrollHeight;
+      };
+
+      const scheduleRender = () => {
+        if (renderTimer !== null) return;
+        renderTimer = setTimeout(flushRender, 33);
+      };
 
       stopBtn.onclick = async (e) => {
         e.stopPropagation();
@@ -1099,13 +1425,15 @@
 
           // Normal assistant text tokens
           if (typeof chunk === "string") {
-            shown = chunk;
-            assistantBubble.innerHTML = renderMarkdown(shown);
-            ensureOpen();
-            ui.messages.scrollTop = ui.messages.scrollHeight;
+            pendingShown = chunk;
+            scheduleRender();
 
             // Tool results (print_tree, read_file, etc.)
           } else if (chunk && chunk.isToolResult) {
+            if (renderTimer !== null) {
+              clearTimeout(renderTimer);
+              flushRender();
+            }
             ensureOpen();
 
             if (chunk.tool === "repo_browser.print_tree" && chunk.result) {
@@ -1182,6 +1510,10 @@
           ui.messages.scrollTop = ui.messages.scrollHeight;
         }
       } finally {
+        if (renderTimer !== null) {
+          clearTimeout(renderTimer);
+          flushRender();
+        }
         spinner.classList.remove("active");
         spinner.classList.remove("retrying");
         if (typeof retryBadge !== "undefined") {
@@ -1195,12 +1527,58 @@
     // Send button now just delegates to startExchange
     ui.send.onclick = () => {
       const text = ui.prompt.value.trim();
-      if (!text) return;
+      const imageDataUrl = pendingAttachment.dataUrl;
+      if (!text && !imageDataUrl) return;
       ui.prompt.value = "";
-      startExchange(text);
+      startExchange({ text, imageDataUrl });
+      clearAttachment();
     };
 
+    ui.imageInput?.addEventListener("change", async (e) => {
+      const files = e.target?.files;
+      if (!files || !files.length) return;
+      const file = files[0];
+      const reader = new FileReader();
+      reader.onload = () => {
+        pendingAttachment.dataUrl = String(reader.result || "");
+        pendingAttachment.name = file.name || "image";
+        if (ui.imagePreview) {
+          ui.imagePreview.src = pendingAttachment.dataUrl;
+          ui.imagePreview.style.display = pendingAttachment.dataUrl ? "block" : "none";
+        }
+        closeAddMenu();
+      };
+      reader.readAsDataURL(file);
+    });
+
+    ui.addMenuBtn?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (ui.addMenu?.classList.contains("open")) closeAddMenu();
+      else openAddMenu();
+    });
+
+    ui.addImageBtn?.addEventListener("click", () => {
+      closeAddMenu();
+      ui.imageInput?.click();
+    });
+
+    ui.removeImageBtn?.addEventListener("click", () => {
+      clearAttachment();
+      closeAddMenu();
+    });
+
+    document.addEventListener("click", (e) => {
+      const target = e.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest(".add-menu-wrap")) return;
+      closeAddMenu();
+    });
+
+    clearAttachment();
     loadState();
+    perfPollingHandle = setInterval(() => {
+      refreshPerfPanel();
+    }, 5000);
   </script>
 </body>
 

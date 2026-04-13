@@ -9,7 +9,9 @@ export type RuntimeState = {
   model: string;
 };
 
-const RUNTIME_PATH = path.resolve(process.env.RUNTIME_JSON || 'runtime.json');
+const RUNTIME_PATH = path.resolve(
+  process.env.RUNTIME_JSON || process.env.RUNTIME_PATH || 'runtime.json'
+);
 
 const defaults: RuntimeState = {
   mcpEnabled: (process.env.MCP_TOOLS_ENABLED || 'true').toLowerCase() === 'true',

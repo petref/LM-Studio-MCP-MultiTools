@@ -1,6 +1,6 @@
 {
   "mcpEnabled": true,
-  "rootDir": "C:\\GIT\\ecomm",
+  "rootDir": "E:\\GIT\\AI\\GIT\\trading_strategy_tester",
   "apiBase": "http://127.0.0.1:1234/v1/chat/completions",
-  "model": "openai/gpt-oss-20b"
+  "model": "qwen/qwen3-vl-8b"
 }

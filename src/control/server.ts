@@ -19,6 +19,10 @@ const MAX_ENTRIES_PER_DIR = 200;
 const HEARTBEAT_MS = 15000;
 const MAX_MODEL_CHARS = 32000;
 const MAX_TOOL_DEPTH = 30;
+const MODELS_CACHE_TTL_MS = 10_000;
+const MAX_TREE_CONCURRENCY = Math.max(1, Number(process.env.TREE_CONCURRENCY || 8));
+const PERF_LOGS_ENABLED = (process.env.PERF_LOGS || "false").toLowerCase() === "true";
+const MAX_PERF_EVENTS = Math.max(50, Number(process.env.PERF_EVENTS_MAX || 400));
 
 const IGNORED_DIRS = new Set([
   "node_modules",
@@ -44,6 +48,95 @@ const longLMAgent = new Agent({
   bodyTimeout: 0,
   connectTimeout: 0,
 });
+
+function elapsedMs(startedAt: bigint): number {
+  return Number((process.hrtime.bigint() - startedAt) / 1_000_000n);
+}
+
+function perfLog(event: string, details: Record<string, unknown>) {
+  const elapsedRaw = details.elapsedMs;
+  const elapsedMs =
+    typeof elapsedRaw === "number" && Number.isFinite(elapsedRaw) ? elapsedRaw : null;
+  perfEvents.push({ ts: Date.now(), event, elapsedMs, details });
+  if (perfEvents.length > MAX_PERF_EVENTS) perfEvents.shift();
+
+  if (!PERF_LOGS_ENABLED) return;
+  console.log(`[perf] ${event} ${JSON.stringify(details)}`);
+}
+
+function createLimiter(limit: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+
+  const runNext = () => {
+    if (active >= limit) return;
+    const next = queue.shift();
+    if (!next) return;
+    active++;
+    next();
+  };
+
+  return async function withLimit<T>(fn: () => Promise<T>): Promise<T> {
+    await new Promise<void>((resolve) => {
+      queue.push(resolve);
+      runNext();
+    });
+
+    try {
+      return await fn();
+    } finally {
+      active--;
+      runNext();
+    }
+  };
+}
+
+const runTreeLimited = createLimiter(MAX_TREE_CONCURRENCY);
+
+type PerfEntry = {
+  ts: number;
+  event: string;
+  elapsedMs: number | null;
+  details: Record<string, unknown>;
+};
+
+const perfEvents: PerfEntry[] = [];
+
+function summarizePerf(entries: PerfEntry[]) {
+  const summarize = (eventName: string) => {
+    const rows = entries
+      .filter((e) => e.event === eventName && typeof e.elapsedMs === "number")
+      .map((e) => e.elapsedMs as number);
+    if (!rows.length) return { count: 0, avgMs: 0, p95Ms: 0, maxMs: 0, lastMs: 0 };
+
+    const sorted = [...rows].sort((a, b) => a - b);
+    const p95Index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * 0.95) - 1));
+    const sum = rows.reduce((acc, n) => acc + n, 0);
+
+    return {
+      count: rows.length,
+      avgMs: Number((sum / rows.length).toFixed(2)),
+      p95Ms: Number(sorted[p95Index].toFixed(2)),
+      maxMs: Number(sorted[sorted.length - 1].toFixed(2)),
+      lastMs: Number(rows[rows.length - 1].toFixed(2)),
+    };
+  };
+
+  const toolRows = entries.filter((e) => e.event === "tool.call");
+  const byTool: Record<string, number> = {};
+  for (const row of toolRows) {
+    const tool = String(row.details.tool || "unknown");
+    byTool[tool] = (byTool[tool] || 0) + 1;
+  }
+
+  return {
+    chatRequest: summarize("chat.request"),
+    chatRound: summarize("chat.round"),
+    toolCall: summarize("tool.call"),
+    treeList: summarize("tree.list"),
+    toolCounts: byTool,
+  };
+}
 
 // ---------------- Helpers ----------------
 function json(res: any, obj: any, code = 200) {
@@ -96,6 +189,7 @@ let dashboardState: DashboardState = {
   rootDir: getRuntime().rootDir || ".",
   mcpEnabled: getRuntime().mcpEnabled !== false,
 };
+let modelsCache: { url: string; expiresAt: number; data: any } | null = null;
 
 // Tracks currently running LM request so /abort can cancel it
 let activeLmAbortController: AbortController | null = null;
@@ -113,13 +207,50 @@ async function withinRoot(relPath: string): Promise<string> {
   const rel = relPath && relPath.trim() ? relPath : ".";
   const abs = path.resolve(ROOT, rel);
 
-  const rootNorm = path.normalize(ROOT).toLowerCase();
-  const absNorm = path.normalize(abs).toLowerCase();
+  const rootNorm = path.normalize(ROOT);
+  const absNorm = path.normalize(abs);
+  const rootCmp = process.platform === "win32" ? rootNorm.toLowerCase() : rootNorm;
+  const absCmp = process.platform === "win32" ? absNorm.toLowerCase() : absNorm;
+  const relFromRoot = path.relative(rootCmp, absCmp);
 
-  if (!absNorm.startsWith(rootNorm)) {
+  if (relFromRoot.startsWith("..") || path.isAbsolute(relFromRoot)) {
     throw new Error(`Path escapes project root: rel="${relPath}", root="${ROOT}"`);
   }
   return abs;
+}
+
+function toModelsUrl(apiBase: string): string {
+  const chatUrl = normalizeApiBase(apiBase);
+  const noTrail = chatUrl.replace(/\/+$/, "");
+  const base = noTrail.endsWith("/chat/completions")
+    ? noTrail.slice(0, -"/chat/completions".length)
+    : noTrail;
+  return `${base}/models`;
+}
+
+function normalizeToolRelPath(input: unknown): string {
+  const raw = typeof input === "string" ? input.trim() : "";
+  if (!raw) return "";
+  if (!path.isAbsolute(raw)) return raw;
+
+  const root = getWorkspaceRoot();
+  const rootNorm = path.normalize(root);
+  const absNorm = path.normalize(path.resolve(raw));
+  const rootCmp = process.platform === "win32" ? rootNorm.toLowerCase() : rootNorm;
+  const absCmp = process.platform === "win32" ? absNorm.toLowerCase() : absNorm;
+  const relFromRoot = path.relative(rootCmp, absCmp);
+
+  if (!(relFromRoot.startsWith("..") || path.isAbsolute(relFromRoot))) {
+    return relFromRoot || ".";
+  }
+
+  // Models occasionally send just the drive root (e.g. "E:\\").
+  // Treat that as workspace root rather than hard-failing the request.
+  const driveRoot = path.parse(rootCmp).root.replace(/[\\\/]+$/, "");
+  const absNoTrail = absCmp.replace(/[\\\/]+$/, "");
+  if (driveRoot && absNoTrail === driveRoot) return "";
+
+  return raw;
 }
 
 async function readFileSafe(rel: string) {
@@ -138,6 +269,7 @@ async function writeFileSafe(rel: string, content: string) {
 }
 
 async function listTree(rel: string, depth = 0): Promise<any> {
+  const startedAt = depth === 0 ? process.hrtime.bigint() : 0n;
   if (depth > MAX_TREE_DEPTH) return { name: rel, type: "max-depth" };
 
   const abs = await withinRoot(rel);
@@ -149,24 +281,37 @@ async function listTree(rel: string, depth = 0): Promise<any> {
   entries = entries.filter((e) => !IGNORED_DIRS.has(e.name));
   if (entries.length > MAX_ENTRIES_PER_DIR) entries = entries.slice(0, MAX_ENTRIES_PER_DIR);
 
-  const children: any[] = [];
-  for (const entry of entries) {
-    const childRel = rel ? path.join(rel, entry.name) : entry.name;
-    if (entry.isDirectory()) children.push(await listTree(childRel, depth + 1));
-    else children.push({ name: childRel, type: "file" });
-  }
+  const children = await Promise.all(
+    entries.map(async (entry) => {
+      const childRel = rel ? path.join(rel, entry.name) : entry.name;
+      if (entry.isDirectory()) return runTreeLimited(() => listTree(childRel, depth + 1));
+      return { name: childRel, type: "file" };
+    })
+  );
 
-  return { name: rel, type: "dir", children };
+  const result = { name: rel, type: "dir", children };
+  if (depth === 0) {
+    perfLog("tree.list", {
+      path: rel || ".",
+      elapsedMs: elapsedMs(startedAt),
+      maxDepth: MAX_TREE_DEPTH,
+      maxEntriesPerDir: MAX_ENTRIES_PER_DIR,
+      concurrency: MAX_TREE_CONCURRENCY,
+    });
+  }
+  return result;
 }
 
 function trimMessages(msgs: any[]): any[] {
-  let out = [...msgs];
-  let totalChars = out.reduce((acc, m) => acc + JSON.stringify(m).length, 0);
-  while (totalChars > MAX_MODEL_CHARS && out.length > 1) {
-    out.shift();
-    totalChars = out.reduce((acc, m) => acc + JSON.stringify(m).length, 0);
+  if (msgs.length <= 1) return [...msgs];
+  const sizes = msgs.map((m) => JSON.stringify(m).length);
+  let totalChars = sizes.reduce((acc, n) => acc + n, 0);
+  let start = 0;
+  while (totalChars > MAX_MODEL_CHARS && start < msgs.length - 1) {
+    totalChars -= sizes[start];
+    start++;
   }
-  return out;
+  return msgs.slice(start);
 }
 
 // ---------------- System prompt (kept minimal here) ----------------
@@ -207,95 +352,112 @@ function stopHeartbeat(timer: NodeJS.Timeout | null) {
 
 function createExecuteTool(res: any): ToolExecutor {
   return async (toolName: string, args: any) => {
+    const startedAt = process.hrtime.bigint();
+    let status = "ok";
     if (!toolName) {
       const err = { error: "Missing tool name" };
       res.write("event: tool_result\n");
       res.write(`data: ${JSON.stringify({ tool: toolName || "unknown", result: err })}\n\n`);
+      status = "error";
       return err;
     }
 
-    if (toolName === "repo_browser.print_tree") {
-      const tree = await listTree(args.path || "");
-      res.write("event: tool_result\n");
-      res.write(`data: ${JSON.stringify({ tool: toolName, result: tree })}\n\n`);
-      return tree;
-    }
-
-    if (toolName === "repo_browser.read_file") {
-      const data = await readFileSafe(args.path || "");
-      res.write("event: tool_result\n");
-      res.write(`data: ${JSON.stringify({ tool: toolName, result: data })}\n\n`);
-      return data;
-    }
-
-    if (toolName === "repo_browser.create_directory") {
-      const relPath = args.path || "";
-      const abs = await withinRoot(relPath);
-      await fs.mkdir(abs, { recursive: true });
-      const result = { ok: true, created: relPath };
-      res.write("event: tool_result\n");
-      res.write(`data: ${JSON.stringify({ tool: toolName, result })}\n\n`);
-      return result;
-    }
-
-    if (toolName === "repo_browser.create_file") {
-      const relPath = args.path || "";
-      const content = typeof args.content === "string" ? args.content : "";
-      await writeFileSafe(relPath, content);
-      const result = { ok: true, path: relPath, bytes: Buffer.byteLength(content, "utf8") };
-      res.write("event: tool_result\n");
-      res.write(`data: ${JSON.stringify({ tool: toolName, result })}\n\n`);
-      return result;
-    }
-
-    if (toolName === "repo_browser.apply_patch") {
-      try {
-        const url = `${DASHBOARD_BASE}/mcp/apply_patch`;
-        const r = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ patch: args.patch }),
-          // @ts-ignore
-          dispatcher: longLMAgent,
-        }).then((x) => x.json());
-
+    try {
+      if (toolName === "repo_browser.print_tree") {
+        const toolPath = normalizeToolRelPath(args.path);
+        const tree = await listTree(toolPath);
         res.write("event: tool_result\n");
-        res.write(`data: ${JSON.stringify({ tool: toolName, result: r })}\n\n`);
-        return r;
-      } catch (e: any) {
-        const err = { error: "Failed to call /mcp/apply_patch", detail: String(e?.message || e) };
-        res.write("event: tool_result\n");
-        res.write(`data: ${JSON.stringify({ tool: toolName, result: err })}\n\n`);
-        return err;
+        res.write(`data: ${JSON.stringify({ tool: toolName, result: tree })}\n\n`);
+        return tree;
       }
-    }
 
-    if (toolName === "repo_browser.rewrite_file") {
-      try {
-        const url = `${DASHBOARD_BASE}/mcp/rewrite_file`;
-        const r = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path: args.path, content: args.content }),
-          // @ts-ignore
-          dispatcher: longLMAgent,
-        }).then((x) => x.json());
-
+      if (toolName === "repo_browser.read_file") {
+        const toolPath = normalizeToolRelPath(args.path);
+        const data = await readFileSafe(toolPath);
         res.write("event: tool_result\n");
-        res.write(`data: ${JSON.stringify({ tool: toolName, result: r })}\n\n`);
-        return r;
-      } catch (e: any) {
-        const err = { error: "Failed to call /mcp/rewrite_file", detail: String(e?.message || e) };
-        res.write("event: tool_result\n");
-        res.write(`data: ${JSON.stringify({ tool: toolName, result: err })}\n\n`);
-        return err;
+        res.write(`data: ${JSON.stringify({ tool: toolName, result: data })}\n\n`);
+        return data;
       }
-    }
 
-    const errUnknown = { error: "Unknown tool" };
-    res.write("event: tool_result\n");
-    res.write(`data: ${JSON.stringify({ tool: toolName, result: errUnknown })}\n\n`);
-    return errUnknown;
+      if (toolName === "repo_browser.create_directory") {
+        const relPath = normalizeToolRelPath(args.path);
+        const abs = await withinRoot(relPath);
+        await fs.mkdir(abs, { recursive: true });
+        const result = { ok: true, created: relPath };
+        res.write("event: tool_result\n");
+        res.write(`data: ${JSON.stringify({ tool: toolName, result })}\n\n`);
+        return result;
+      }
+
+      if (toolName === "repo_browser.create_file") {
+        const relPath = normalizeToolRelPath(args.path);
+        const content = typeof args.content === "string" ? args.content : "";
+        await writeFileSafe(relPath, content);
+        const result = { ok: true, path: relPath, bytes: Buffer.byteLength(content, "utf8") };
+        res.write("event: tool_result\n");
+        res.write(`data: ${JSON.stringify({ tool: toolName, result })}\n\n`);
+        return result;
+      }
+
+      if (toolName === "repo_browser.apply_patch") {
+        try {
+          const url = `${DASHBOARD_BASE}/mcp/apply_patch`;
+          const r = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ patch: args.patch }),
+            // @ts-ignore
+            dispatcher: longLMAgent,
+          }).then((x) => x.json());
+
+          res.write("event: tool_result\n");
+          res.write(`data: ${JSON.stringify({ tool: toolName, result: r })}\n\n`);
+          return r;
+        } catch (e: any) {
+          const err = { error: "Failed to call /mcp/apply_patch", detail: String(e?.message || e) };
+          res.write("event: tool_result\n");
+          res.write(`data: ${JSON.stringify({ tool: toolName, result: err })}\n\n`);
+          status = "error";
+          return err;
+        }
+      }
+
+      if (toolName === "repo_browser.rewrite_file") {
+        try {
+          const url = `${DASHBOARD_BASE}/mcp/rewrite_file`;
+          const relPath = normalizeToolRelPath(args.path);
+          const r = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: relPath, content: args.content }),
+            // @ts-ignore
+            dispatcher: longLMAgent,
+          }).then((x) => x.json());
+
+          res.write("event: tool_result\n");
+          res.write(`data: ${JSON.stringify({ tool: toolName, result: r })}\n\n`);
+          return r;
+        } catch (e: any) {
+          const err = { error: "Failed to call /mcp/rewrite_file", detail: String(e?.message || e) };
+          res.write("event: tool_result\n");
+          res.write(`data: ${JSON.stringify({ tool: toolName, result: err })}\n\n`);
+          status = "error";
+          return err;
+        }
+      }
+
+      const errUnknown = { error: "Unknown tool" };
+      res.write("event: tool_result\n");
+      res.write(`data: ${JSON.stringify({ tool: toolName, result: errUnknown })}\n\n`);
+      status = "error";
+      return errUnknown;
+    } finally {
+      perfLog("tool.call", {
+        tool: toolName,
+        status,
+        elapsedMs: elapsedMs(startedAt),
+      });
+    }
   };
 }
 
@@ -370,6 +532,7 @@ const TOOLS = [
 ];
 
 async function runChatWithTools(ctx: ChatContext, messages: any[], depth = 0): Promise<void> {
+  const roundStartedAt = process.hrtime.bigint();
   const { res, lmAbort, effectiveModel, payload, toolsPayload, executeTool } = ctx;
 
   if (depth > MAX_TOOL_DEPTH) {
@@ -381,7 +544,10 @@ async function runChatWithTools(ctx: ChatContext, messages: any[], depth = 0): P
   const lmUrl = dashboardState.apiBase || LM_CHAT_URL;
 
   let resp: any;
+  let lastFetchError = "Upstream LM fetch failed";
+  let attemptsUsed = 0;
   for (let attempt = 1; attempt <= LM_MAX_RETRIES; attempt++) {
+    attemptsUsed = attempt;
     try {
       resp = await fetch(lmUrl, {
         method: "POST",
@@ -399,19 +565,36 @@ async function runChatWithTools(ctx: ChatContext, messages: any[], depth = 0): P
       });
 
       if (resp.ok && resp.body) break;
+      lastFetchError = `HTTP ${resp.status}`;
     } catch (e: any) {
       if (e?.name === "AbortError") throw e;
+      lastFetchError = String(e?.message || e);
+    }
+
+    if (attempt < LM_MAX_RETRIES) {
+      res.write("event: retry\n");
+      res.write(
+        `data: ${JSON.stringify({ attempt: attempt + 1, max: LM_MAX_RETRIES, reason: lastFetchError })}\n\n`
+      );
+      await new Promise((resolve) => setTimeout(resolve, Math.min(250 * attempt, 1000)));
     }
   }
 
   if (!resp || !resp.ok || !resp.body) {
     res.write("event: error\n");
-    res.write(`data: ${JSON.stringify({ message: "Upstream LM fetch failed" })}\n\n`);
+    res.write(`data: ${JSON.stringify({ message: lastFetchError || "Upstream LM fetch failed" })}\n\n`);
+    perfLog("chat.round", {
+      depth,
+      status: "upstream_error",
+      attempts: attemptsUsed,
+      elapsedMs: elapsedMs(roundStartedAt),
+    });
     return;
   }
 
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
+  let sseBuffer = "";
 
   const toolBuffers: any[] = [];
   let sawToolCalls = false;
@@ -420,14 +603,21 @@ async function runChatWithTools(ctx: ChatContext, messages: any[], depth = 0): P
     const { value, done } = await reader.read();
     if (done) break;
 
-    const chunk = decoder.decode(value, { stream: true });
-    const lines = chunk.split("\n");
+    sseBuffer += decoder.decode(value, { stream: true });
+    let sep = sseBuffer.indexOf("\n\n");
+    while (sep !== -1) {
+      const rawEvent = sseBuffer.slice(0, sep);
+      sseBuffer = sseBuffer.slice(sep + 2);
+      sep = sseBuffer.indexOf("\n\n");
 
-    for (const raw of lines) {
-      const ln = raw.trim();
-      if (!ln.startsWith("data:")) continue;
+      const lines = rawEvent.split("\n");
+      const dataLines: string[] = [];
+      for (const raw of lines) {
+        const ln = raw.replace(/\r$/, "");
+        if (ln.startsWith("data:")) dataLines.push(ln.slice(5).trimStart());
+      }
 
-      const jsonPart = ln.slice(5).trim();
+      const jsonPart = dataLines.join("\n").trim();
       if (!jsonPart || jsonPart === "[DONE]") continue;
 
       let deltaObj: any;
@@ -510,9 +700,24 @@ async function runChatWithTools(ctx: ChatContext, messages: any[], depth = 0): P
     if (toolCallsForMsg.length > 0) {
       const assistantToolMessage = { role: "assistant", tool_calls: toolCallsForMsg };
       const nextMessages = [...messages, assistantToolMessage, ...toolResultMessages];
+      perfLog("chat.round", {
+        depth,
+        status: "tool_calls",
+        toolCalls: toolCallsForMsg.length,
+        attempts: attemptsUsed,
+        elapsedMs: elapsedMs(roundStartedAt),
+      });
       await runChatWithTools(ctx, nextMessages, depth + 1);
+      return;
     }
   }
+
+  perfLog("chat.round", {
+    depth,
+    status: "done",
+    attempts: attemptsUsed,
+    elapsedMs: elapsedMs(roundStartedAt),
+  });
 }
 
 function buildBaseMessages(userMessages: any[], currentRoot: string) {
@@ -520,6 +725,9 @@ function buildBaseMessages(userMessages: any[], currentRoot: string) {
 }
 
 async function handleChat(req: any, res: any) {
+  const chatStartedAt = process.hrtime.bigint();
+  let chatStatus = "ok";
+  let userMsgCount = 0;
   const lmAbort = new AbortController();
   activeLmAbortController = lmAbort;
 
@@ -534,6 +742,7 @@ async function handleChat(req: any, res: any) {
   try {
     const payload: ChatPayload = await readJsonBody(req);
     const userMessages = payload.messages || [];
+    userMsgCount = userMessages.length;
 
     const currentRoot = getWorkspaceRoot();
     const baseMessages = buildBaseMessages(userMessages, currentRoot);
@@ -573,10 +782,12 @@ async function handleChat(req: any, res: any) {
     stopHeartbeat(heartbeat);
 
     if (e?.name === "AbortError") {
+      chatStatus = "aborted";
       try { res.end(); } catch { }
       return;
     }
 
+    chatStatus = "error";
     try {
       res.write("event: error\n");
       res.write(`data: ${JSON.stringify({ message: e?.message || "Internal error" })}\n\n`);
@@ -584,6 +795,12 @@ async function handleChat(req: any, res: any) {
     } catch {
       // ignore
     }
+  } finally {
+    perfLog("chat.request", {
+      status: chatStatus,
+      userMessages: userMsgCount,
+      elapsedMs: elapsedMs(chatStartedAt),
+    });
   }
 }
 
@@ -637,9 +854,19 @@ const server = createServer(async (req, res) => {
   // ---- MODELS ----
   if (req.url === "/models" && req.method === "GET") {
     try {
-      const modelsUrl = `${LM_BASE}/models`;
+      const modelsUrl = toModelsUrl(dashboardState.apiBase || LM_CHAT_URL);
+      const now = Date.now();
+      if (modelsCache && modelsCache.url === modelsUrl && modelsCache.expiresAt > now) {
+        return json(res, modelsCache.data);
+      }
+
       const r = await fetch(modelsUrl);
+      if (!r.ok) {
+        return json(res, { data: [], error: `HTTP ${r.status} from ${modelsUrl}` }, 502);
+      }
+
       const data = await r.json();
+      modelsCache = { url: modelsUrl, expiresAt: now + MODELS_CACHE_TTL_MS, data };
       return json(res, data);
     } catch (e: any) {
       return json(res, { data: [], error: String(e) }, 500);
@@ -704,11 +931,28 @@ const server = createServer(async (req, res) => {
     return json(res, { ok: true });
   }
 
+  // ---- Perf ----
+  if (req.method === "GET" && req.url?.startsWith("/perf")) {
+    const urlObj = new URL(req.url, `http://localhost:${PORT}`);
+    const limitRaw = Number(urlObj.searchParams.get("limit") || "100");
+    const limit = Math.max(1, Math.min(MAX_PERF_EVENTS, Number.isFinite(limitRaw) ? limitRaw : 100));
+    const recent = perfEvents.slice(-limit);
+    return json(res, {
+      ok: true,
+      enabledConsoleLogs: PERF_LOGS_ENABLED,
+      maxEvents: MAX_PERF_EVENTS,
+      totalEvents: perfEvents.length,
+      recent,
+      summary: summarizePerf(recent),
+    });
+  }
+
   // ---- Better 404: JSON for API-ish paths ----
   const url = req.url || "";
   const wantsJson =
     url.startsWith("/state") ||
     url.startsWith("/models") ||
+    url.startsWith("/perf") ||
     url.startsWith("/chat") ||
     url.startsWith("/abort") ||
     url.startsWith("/fs/") ||

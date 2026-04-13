@@ -6,12 +6,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "bridge": "node dist/bridge/bridge.js",
-    "mcp": "node dist/mcp/server.js",
+    "mcp": "node dist/mcp/standalone.js",
     "dev:bridge": "tsx watch src/bridge/bridge.ts",
-    "dev:mcp": "tsx watch src/mcp/server.ts",
+    "dev:mcp": "tsx watch src/mcp/standalone.ts",
     "chat": "tsx src/chat/chat.ts",
     "dev:chat": "tsx watch src/chat/chat.ts",
-    "dev": "tsx watch src/mcp/server.ts",
+    "dev": "tsx watch src/mcp/standalone.ts",
     "dashboard": "set HOST=0.0.0.0 && tsx src/control/server.ts"
   },
   "dependencies": {

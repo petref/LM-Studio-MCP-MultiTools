@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-const RUNTIME_PATH = path.resolve(process.env.RUNTIME_JSON || 'runtime.json');
+const RUNTIME_PATH = path.resolve(process.env.RUNTIME_JSON || process.env.RUNTIME_PATH || 'runtime.json');
 const defaults = {
     mcpEnabled: (process.env.MCP_TOOLS_ENABLED || 'true').toLowerCase() === 'true',
     rootDir: process.env.MCP_ROOT_DIR || '.',

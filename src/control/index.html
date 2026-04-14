@@ -8,6 +8,7 @@
   <style>
     :root {
       color-scheme: dark light;
+      --accent: #3f8cff;
     }
 
     *,
@@ -21,6 +22,13 @@
       font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
       background: #050505;
       color: #f5f5f5;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    html {
+      height: 100%;
+      overflow: hidden;
     }
 
     /* --- Layout shell: sidebar + main in a grid --- */
@@ -28,7 +36,9 @@
       display: grid;
       grid-template-columns: 320px minmax(0, 1fr);
       height: 100dvh;
+      min-height: 0;
       background: radial-gradient(circle at top left, #1c1c1c 0, #050505 60%);
+      overflow: hidden;
     }
 
     /* Collapsed: hide sidebar, main gets full width */
@@ -48,6 +58,8 @@
       border-right: 1px solid #222;
       padding: 16px;
       overflow: hidden;
+      height: 100%;
+      min-height: 0;
       box-shadow: 4px 0 20px rgba(0, 0, 0, 0.45);
       transition: transform 0.25s ease, opacity 0.25s ease;
     }
@@ -85,7 +97,7 @@
     }
 
     .sidebar-tab.active {
-      border-color: #3f8cff;
+      border-color: var(--accent);
       background: #10233f;
       color: #e8f2ff;
     }
@@ -107,6 +119,9 @@
     /* --- Main column --- */
     .main {
       min-width: 0;
+      min-height: 0;
+      height: 100%;
+      overflow: hidden;
       /* critical so children can shrink, no overflow onto sidebar */
       display: flex;
       flex-direction: column;
@@ -142,6 +157,7 @@
     .messages-wrapper {
       flex: 1;
       min-height: 0;
+      overflow: hidden;
       background: rgba(8, 8, 8, 0.96);
       border-radius: 12px;
       box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
@@ -154,6 +170,7 @@
       flex: 1;
       min-height: 0;
       overflow: auto;
+      overscroll-behavior: contain;
       padding: 4px;
       background: linear-gradient(180deg, #050505 0, #111 40%, #050505 100%);
       border-radius: 8px;
@@ -328,27 +345,242 @@
       gap: 6px;
     }
 
+    .sidebar-section {
+      padding: 6px 0 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+      margin-bottom: 10px;
+    }
+
+    .sidebar-section:last-of-type {
+      border-bottom: 0;
+      margin-bottom: 0;
+      padding-bottom: 0;
+    }
+
+    .section-title {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: rgba(8, 8, 8, 0.92);
+      backdrop-filter: blur(4px);
+      padding: 4px 0;
+    }
+
+    .section-collapse {
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 7px;
+      font-size: 14px;
+      line-height: 1;
+    }
+
+    .section-body {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .sidebar-section.collapsed .section-body {
+      display: none;
+    }
+
+    .sidebar-section.collapsed .section-collapse {
+      transform: rotate(-90deg);
+    }
+
     .list-box {
-      border: 1px solid #2e2e2e;
-      border-radius: 8px;
-      padding: 6px;
-      max-height: 160px;
+      border: 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 0;
+      padding: 8px 2px;
+      max-height: 190px;
       overflow: auto;
-      background: rgba(0, 0, 0, 0.25);
+      background: transparent;
     }
 
     .list-item {
       width: 100%;
       text-align: left;
-      margin-bottom: 4px;
-      background: #111;
-      border: 1px solid #2f2f2f;
+      margin-bottom: 6px;
+      background: linear-gradient(180deg, rgba(24, 24, 24, 0.95), rgba(12, 12, 12, 0.95));
+      border: 1px solid rgba(255, 255, 255, 0.12);
       font-size: 13px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
     }
 
     .list-item.active {
-      border-color: #3f8cff;
-      background: #10233f;
+      border-color: var(--accent);
+      background: linear-gradient(180deg, rgba(22, 48, 86, 0.95), rgba(15, 34, 60, 0.95));
+      box-shadow: 0 4px 10px rgba(37, 99, 235, 0.25);
+    }
+
+    .match {
+      background: rgba(63, 140, 255, 0.18);
+      border-radius: 4px;
+      padding: 0 2px;
+    }
+
+    .list-item-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 6px;
+      margin-bottom: 6px;
+      align-items: center;
+    }
+
+    .list-item-row .list-item {
+      margin-bottom: 0;
+    }
+
+    .item-actions {
+      position: relative;
+      display: inline-flex;
+    }
+
+    .item-action-btn {
+      padding: 6px 8px;
+      border-radius: 7px;
+      font-size: 11px;
+      min-width: 34px;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+    }
+
+    .item-menu {
+      position: fixed;
+      min-width: 120px;
+      display: none;
+      flex-direction: column;
+      gap: 4px;
+      padding: 6px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: rgba(10, 12, 18, 0.98);
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+      z-index: 60;
+    }
+
+    .item-menu.open {
+      display: flex;
+    }
+
+    .item-menu button {
+      width: 100%;
+      text-align: left;
+      padding: 7px 8px;
+      font-size: 12px;
+      border-radius: 7px;
+    }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.55);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 120;
+    }
+
+    .modal-backdrop.open {
+      display: flex;
+      animation: fadeIn 0.14s ease;
+    }
+
+    .modal-panel {
+      width: min(560px, calc(100vw - 24px));
+      max-height: calc(100vh - 40px);
+      overflow: auto;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      background: linear-gradient(180deg, rgba(16, 16, 18, 0.98), rgba(8, 8, 10, 0.98));
+      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.55);
+      padding: 14px;
+    }
+
+    .modal-title {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .modal-text {
+      font-size: 13px;
+      color: #d8d8d8;
+      margin-bottom: 10px;
+      white-space: pre-wrap;
+    }
+
+    .modal-field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+
+    .modal-field textarea,
+    .modal-field input {
+      width: 100%;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      background: #080808;
+      color: #f3f3f3;
+      padding: 8px;
+      font-family: inherit;
+      font-size: 13px;
+    }
+
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .danger {
+      border-color: rgba(255, 99, 99, 0.45) !important;
+      background: linear-gradient(180deg, rgba(95, 24, 24, 0.95), rgba(58, 16, 16, 0.95)) !important;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+      }
+      to {
+        opacity: 1;
+      }
+    }
+
+    body.compact .sidebar {
+      padding: 10px;
+    }
+
+    body.compact .list-item,
+    body.compact .item-action-btn {
+      font-size: 11px;
+      padding-top: 5px;
+      padding-bottom: 5px;
+    }
+
+    body.compact .bubble {
+      padding: 8px;
+      margin: 6px 0;
+      font-size: 13px;
     }
 
     .list-actions {
@@ -361,10 +593,11 @@
       width: 100%;
       padding: 6px 8px;
       border-radius: 8px;
-      border: 1px solid #444;
+      border: 1px solid rgba(255, 255, 255, 0.28);
       background: #0a0a0a;
       color: #eee;
       font-size: 12px;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
     }
 
     input[type="text"] {
@@ -669,35 +902,66 @@
         <div class="sidebar-tabs">
           <button id="tabProjects" class="sidebar-tab active" type="button">Proj</button>
           <button id="tabSettings" class="sidebar-tab" type="button">Set</button>
+          <button id="tabTools" class="sidebar-tab" type="button">Tools</button>
           <button id="tabPerf" class="sidebar-tab" type="button">Perf</button>
         </div>
         <div class="sidebar-content">
       <div id="paneProjects" class="sidebar-pane active">
       <h3 style="margin-top:0">Projects & Chats</h3>
-      <div class="stack" style="margin-bottom:12px">
-        <div class="row">
-          <strong style="font-size:13px">Projects</strong>
-          <button id="newProject" type="button">New</button>
+      <div id="projectsSection" class="stack sidebar-section">
+        <div class="section-header">
+          <strong class="section-title">Projects</strong>
+          <button id="toggleProjectsSection" class="section-collapse" type="button" aria-label="Collapse projects section">▼</button>
         </div>
-        <input id="projectSearch" class="mini-input" type="text" placeholder="Search projects..." />
-        <div id="projectList" class="list-box"></div>
-        <div class="list-actions">
-          <button id="renameProject" type="button">Rename</button>
-          <button id="deleteProject" type="button">Delete</button>
+        <div class="section-body">
+          <div class="row">
+            <button id="newProject" type="button">New</button>
+            <button id="importProject" type="button">Import</button>
+            <button id="backupState" type="button">Backup</button>
+          </div>
+          <select id="projectFilterMode" class="mini-input">
+            <option value="all">All projects</option>
+            <option value="pinned">Pinned only</option>
+            <option value="recent">Recent (7d)</option>
+          </select>
+          <input id="projectSearch" class="mini-input" type="text" placeholder="Search projects..." />
+          <div id="projectList" class="list-box"></div>
         </div>
       </div>
-      <div class="stack" style="margin-bottom:12px">
-        <div class="row">
-          <strong style="font-size:13px">Chat Windows</strong>
-          <button id="newChat" type="button">New</button>
+      <div id="projectRootSection" class="stack sidebar-section">
+        <div class="section-header">
+          <strong class="section-title">Project Root Folder</strong>
+          <button id="toggleProjectRootSection" class="section-collapse" type="button" aria-label="Collapse project root section">▼</button>
         </div>
+        <div class="section-body">
+          <input id="projectRootDir" class="mini-input" type="text" placeholder="." />
+          <input id="projectRootPicker" type="file" webkitdirectory directory style="display:none" />
+          <div class="list-actions">
+            <button id="pickProjectRoot" type="button">Pick Folder</button>
+          </div>
+          <div style="font-size: 11px; color: #8f8f8f">Path picker only. No files are imported.</div>
+          <div class="list-actions">
+            <button id="applyProjectRoot" type="button">Apply Root</button>
+            <button id="dryRunRoot" type="button">Dry-run Root</button>
+          </div>
+          <div id="projectRootStatus" style="font-size: 12px; color: #aaa"></div>
+          <div id="projectRootHealth" style="font-size: 11px; color: #9ec2ff"></div>
+        </div>
+      </div>
+      <div class="stack sidebar-section">
+        <div class="row">
+          <strong class="section-title">Chat Windows</strong>
+          <button id="newChat" type="button">New</button>
+          <button id="bulkDeleteChats" type="button">Bulk Del</button>
+        </div>
+        <select id="chatFilterMode" class="mini-input">
+          <option value="all">All chats</option>
+          <option value="pinned">Pinned only</option>
+          <option value="recent">Recent (7d)</option>
+          <option value="archived">Archived only</option>
+        </select>
         <input id="chatSearch" class="mini-input" type="text" placeholder="Search chats..." />
         <div id="chatList" class="list-box"></div>
-        <div class="list-actions">
-          <button id="renameChat" type="button">Rename</button>
-          <button id="togglePinChat" type="button">Pin/Unpin</button>
-          <button id="deleteChat" type="button">Delete</button>
-        </div>
       </div>
       </div>
       <div id="paneSettings" class="sidebar-pane">
@@ -706,27 +970,32 @@
         <span id="llmHealth" class="pill">checking…</span>
       </div>
       <label>LLM API Base</label>
-      <input id="apiBase" type="text" placeholder="http://127.0.0.1:1234/v1" />
-      <label>Model</label>
+      <input id="apiBase" type="text" placeholder="http://127.0.0.1:1234/v1" />      <label>Model</label>
       <div class="row">
         <select id="modelSelect" style="flex: 1"></select>
-        <button id="refreshModels">↻</button>
+        <button id="refreshModels">?</button>
       </div>
-      <label>Sandbox Root (MCP_ROOT_DIR)</label>
-      <input id="rootDir" type="text" placeholder="." />
-
-      <label style="margin-top: 10px">Pick project folder</label>
-      <input id="rootPicker" type="file" webkitdirectory directory />
-      <div class="row" style="margin-top: 8px">
-        <button id="usePickedRoot" type="button">Use picked folder as root</button>
-      </div>
+      <label>Temperature</label>
+      <input id="temperatureInput" type="text" placeholder="0.2" />
+      <label>Max Tokens</label>
+      <input id="maxTokensInput" type="text" placeholder="4096" />
       <div class="row" style="margin-top: 8px">
         <input id="mcpEnabled" type="checkbox" />
         <label for="mcpEnabled">Enable MCP Tools</label>
       </div>
-      <div id="rootPickStatus" style="margin-top: 8px; font-size: 12px; color: #aaa"></div>
+      <div class="row" style="margin-top: 8px">
+        <input id="showTimestamps" type="checkbox" />
+        <label for="showTimestamps">Show message timestamps</label>
+      </div>
+      <div class="row" style="margin-top: 8px">
+        <input id="compactMode" type="checkbox" />
+        <label for="compactMode">Compact mode</label>
+      </div>
+      <label>Session Token (optional)</label>
+      <input id="sessionTokenInput" type="text" placeholder="x-dashboard-token" />
       <div class="row" style="margin-top: 8px">
         <button id="saveState">Save</button>
+        <button id="restoreState" type="button">Restore</button>
       </div>
 
       <hr style="margin: 16px 0" />
@@ -751,6 +1020,15 @@
         <div id="perfStatus" class="perf-status">Loading…</div>
         <div id="perfSummary" class="perf-grid"></div>
         <div id="perfRecent" class="perf-recent"></div>
+      </div>
+      </div>
+      <div id="paneTools" class="sidebar-pane">
+      <h3 style="margin-top:0">Tool Activity</h3>
+      <div class="stack">
+        <div class="row">
+          <button id="clearToolLog" type="button">Clear</button>
+        </div>
+        <div id="toolLog" class="perf-recent" style="max-height: 420px;">No tool activity yet.</div>
       </div>
       </div>
       </div>
@@ -778,9 +1056,22 @@
               <input id="imageInput" type="file" accept="image/*" style="display:none" />
             </div>
             <img id="imagePreview" class="attach-preview" alt="image preview" />
+            <button id="regenerate" type="button">Regenerate</button>
             <button id="send">Send</button>
           </div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="modalBackdrop" class="modal-backdrop" role="dialog" aria-modal="true">
+    <div class="modal-panel">
+      <div id="modalTitle" class="modal-title"></div>
+      <div id="modalText" class="modal-text"></div>
+      <div id="modalFields"></div>
+      <div class="modal-actions">
+        <button id="modalCancel" type="button">Cancel</button>
+        <button id="modalConfirm" type="button">OK</button>
       </div>
     </div>
   </div>
@@ -789,15 +1080,24 @@
     const ui = {
       apiBase: document.getElementById("apiBase"),
       modelSelect: document.getElementById("modelSelect"),
-      rootDir: document.getElementById("rootDir"),
+      projectRootDir: document.getElementById("projectRootDir"),
+      projectRootPicker: document.getElementById("projectRootPicker"),
+      pickProjectRoot: document.getElementById("pickProjectRoot"),
+      applyProjectRoot: document.getElementById("applyProjectRoot"),
+      projectRootStatus: document.getElementById("projectRootStatus"),
+      projectRootHealth: document.getElementById("projectRootHealth"),
+      dryRunRoot: document.getElementById("dryRunRoot"),
       mcpEnabled: document.getElementById("mcpEnabled"),
+      temperatureInput: document.getElementById("temperatureInput"),
+      maxTokensInput: document.getElementById("maxTokensInput"),
+      showTimestamps: document.getElementById("showTimestamps"),
+      compactMode: document.getElementById("compactMode"),
+      sessionTokenInput: document.getElementById("sessionTokenInput"),
       saveState: document.getElementById("saveState"),
+      restoreState: document.getElementById("restoreState"),
       refreshModels: document.getElementById("refreshModels"),
       llmHealth: document.getElementById("llmHealth"),
       filePath: document.getElementById("filePath"),
-      rootPicker: document.getElementById("rootPicker"),
-      usePickedRoot: document.getElementById("usePickedRoot"),
-      rootPickStatus: document.getElementById("rootPickStatus"),
       fileContent: document.getElementById("fileContent"),
       openFile: document.getElementById("openFile"),
       saveFile: document.getElementById("saveFile"),
@@ -808,23 +1108,32 @@
       perfRecent: document.getElementById("perfRecent"),
       tabProjects: document.getElementById("tabProjects"),
       tabSettings: document.getElementById("tabSettings"),
+      tabTools: document.getElementById("tabTools"),
       tabPerf: document.getElementById("tabPerf"),
       paneProjects: document.getElementById("paneProjects"),
       paneSettings: document.getElementById("paneSettings"),
+      paneTools: document.getElementById("paneTools"),
       panePerf: document.getElementById("panePerf"),
+      projectsSection: document.getElementById("projectsSection"),
+      projectRootSection: document.getElementById("projectRootSection"),
+      toggleProjectsSection: document.getElementById("toggleProjectsSection"),
+      toggleProjectRootSection: document.getElementById("toggleProjectRootSection"),
       projectList: document.getElementById("projectList"),
       chatList: document.getElementById("chatList"),
       newProject: document.getElementById("newProject"),
+      importProject: document.getElementById("importProject"),
+      backupState: document.getElementById("backupState"),
       newChat: document.getElementById("newChat"),
+      bulkDeleteChats: document.getElementById("bulkDeleteChats"),
+      projectFilterMode: document.getElementById("projectFilterMode"),
+      chatFilterMode: document.getElementById("chatFilterMode"),
       projectSearch: document.getElementById("projectSearch"),
       chatSearch: document.getElementById("chatSearch"),
-      renameProject: document.getElementById("renameProject"),
-      deleteProject: document.getElementById("deleteProject"),
-      renameChat: document.getElementById("renameChat"),
-      togglePinChat: document.getElementById("togglePinChat"),
-      deleteChat: document.getElementById("deleteChat"),
+      clearToolLog: document.getElementById("clearToolLog"),
+      toolLog: document.getElementById("toolLog"),
       messages: document.getElementById("messages"),
       prompt: document.getElementById("prompt"),
+      regenerate: document.getElementById("regenerate"),
       send: document.getElementById("send"),
       sidebarToggle: document.getElementById("sidebarToggle"),
       appShell: document.getElementById("appShell"),
@@ -834,6 +1143,12 @@
       addImageBtn: document.getElementById("addImageBtn"),
       removeImageBtn: document.getElementById("removeImageBtn"),
       imagePreview: document.getElementById("imagePreview"),
+      modalBackdrop: document.getElementById("modalBackdrop"),
+      modalTitle: document.getElementById("modalTitle"),
+      modalText: document.getElementById("modalText"),
+      modalFields: document.getElementById("modalFields"),
+      modalCancel: document.getElementById("modalCancel"),
+      modalConfirm: document.getElementById("modalConfirm"),
     };
 
     const state = {
@@ -844,7 +1159,13 @@
       activeChatId: null,
       projectFilter: "",
       chatFilter: "",
+      projectFilterMode: "all",
+      chatFilterMode: "all",
       activeSidebarTab: "projects",
+      showTimestamps: localStorage.getItem("showTimestamps") === "true",
+      compactMode: localStorage.getItem("compactMode") === "true",
+      authToken: localStorage.getItem("dashboardAuthToken") || "",
+      toolEvents: [],
     };
     const pendingAttachment = { dataUrl: "", name: "" };
     const markdownCache = new Map();
@@ -862,6 +1183,7 @@
       const tabs = [
         { key: "projects", btn: ui.tabProjects, pane: ui.paneProjects },
         { key: "settings", btn: ui.tabSettings, pane: ui.paneSettings },
+        { key: "tools", btn: ui.tabTools, pane: ui.paneTools },
         { key: "perf", btn: ui.tabPerf, pane: ui.panePerf },
       ];
 
@@ -937,6 +1259,151 @@
         /[&<>]/g,
         (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])
       );
+    }
+
+    function renderTextWithMatch(text, query) {
+      const safeText = escapeHTML(String(text || ""));
+      const q = String(query || "").trim();
+      if (!q) return safeText;
+      const safeQ = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return safeText.replace(new RegExp(`(${safeQ})`, "ig"), '<span class="match">$1</span>');
+    }
+
+    function fuzzyScore(text, query) {
+      const t = String(text || "").toLowerCase();
+      const q = String(query || "").toLowerCase().trim();
+      if (!q) return 1;
+      if (t.includes(q)) return q.length + 100;
+      let qi = 0;
+      let score = 0;
+      for (let i = 0; i < t.length && qi < q.length; i++) {
+        if (t[i] === q[qi]) {
+          score += 1;
+          qi++;
+        }
+      }
+      return qi === q.length ? score : 0;
+    }
+
+    function accentFromId(id) {
+      const s = String(id || "default");
+      let h = 0;
+      for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+      return `hsl(${h}, 78%, 56%)`;
+    }
+
+    function apiHeaders(extra = {}) {
+      const out = { ...extra };
+      if (state.authToken) out["x-dashboard-token"] = state.authToken;
+      return out;
+    }
+
+    async function apiFetch(url, options = {}) {
+      const headers = apiHeaders(options.headers || {});
+      const r = await fetch(url, { ...options, headers });
+      if (r.status === 401) {
+        throw new Error("Unauthorized (invalid or missing session token)");
+      }
+      return r;
+    }
+
+    function renderToolLog() {
+      if (!ui.toolLog) return;
+      if (!state.toolEvents.length) {
+        ui.toolLog.textContent = "No tool activity yet.";
+        return;
+      }
+      ui.toolLog.textContent = state.toolEvents
+        .slice(-200)
+        .map((e) => `[${new Date(e.ts).toLocaleTimeString()}] ${e.kind} ${e.text}`)
+        .join("\n");
+    }
+
+    function pushToolEvent(kind, text) {
+      state.toolEvents.push({ ts: Date.now(), kind, text: String(text || "") });
+      if (state.toolEvents.length > 500) state.toolEvents = state.toolEvents.slice(-500);
+      renderToolLog();
+    }
+
+    function openModal(config) {
+      return new Promise((resolve) => {
+        const {
+          title = "Confirm",
+          text = "",
+          confirmText = "OK",
+          cancelText = "Cancel",
+          danger = false,
+          fields = [],
+        } = config || {};
+
+        if (!ui.modalBackdrop) return resolve(null);
+        ui.modalTitle.textContent = title;
+        ui.modalText.textContent = text || "";
+        ui.modalFields.innerHTML = "";
+        const refs = {};
+
+        for (const field of fields) {
+          const wrap = document.createElement("div");
+          wrap.className = "modal-field";
+          if (field.label) {
+            const label = document.createElement("label");
+            label.textContent = field.label;
+            wrap.appendChild(label);
+          }
+          const input = field.type === "textarea" ? document.createElement("textarea") : document.createElement("input");
+          if (field.type !== "textarea") input.type = field.type || "text";
+          input.value = field.value || "";
+          if (field.placeholder) input.placeholder = field.placeholder;
+          if (field.rows && field.type === "textarea") input.rows = field.rows;
+          wrap.appendChild(input);
+          refs[field.id] = input;
+          ui.modalFields.appendChild(wrap);
+        }
+
+        const close = (result) => {
+          ui.modalBackdrop.classList.remove("open");
+          ui.modalConfirm.classList.remove("danger");
+          ui.modalCancel.onclick = null;
+          ui.modalConfirm.onclick = null;
+          ui.modalBackdrop.onclick = null;
+          document.removeEventListener("keydown", onKey);
+          resolve(result);
+        };
+
+        const onKey = (e) => {
+          if (e.key === "Escape") close(null);
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey || fields.length <= 1)) {
+            e.preventDefault();
+            ui.modalConfirm.click();
+          }
+        };
+
+        ui.modalCancel.textContent = cancelText;
+        ui.modalConfirm.textContent = confirmText;
+        ui.modalConfirm.classList.toggle("danger", !!danger);
+        ui.modalCancel.onclick = () => close(null);
+        ui.modalBackdrop.onclick = (ev) => {
+          if (ev.target === ui.modalBackdrop) close(null);
+        };
+        ui.modalConfirm.onclick = () => {
+          const values = {};
+          for (const [id, el] of Object.entries(refs)) values[id] = el.value;
+          close({ values });
+        };
+
+        ui.modalBackdrop.classList.add("open");
+        document.addEventListener("keydown", onKey);
+        const first = Object.values(refs)[0];
+        if (first && typeof first.focus === "function") first.focus();
+      });
+    }
+
+    function debounce(fn, wait = 120) {
+      let t = null;
+      return (...args) => {
+        if (t) clearTimeout(t);
+        t = setTimeout(() => fn(...args), wait);
+      };
     }
 
     window.copyPrev = (btn) => {
@@ -1027,7 +1494,8 @@
         if (!msg || typeof msg !== "object") continue;
         const role = msg.role === "assistant" ? "assistant" : "user";
         const parsed = parseContentForDisplay(msg.content);
-        const b = bubble(role, parsed.text || (parsed.imageUrl ? "[Image attached]" : ""), ui.messages);
+        const stamp = state.showTimestamps && msg.ts ? `[${new Date(msg.ts).toLocaleTimeString()}]\n` : "";
+        const b = bubble(role, stamp + (parsed.text || (parsed.imageUrl ? "[Image attached]" : "")), ui.messages);
         if (role === "user" && parsed.imageUrl) {
           renderUserPrompt(b, parsed.text, parsed.imageUrl);
         }
@@ -1043,60 +1511,320 @@
       const r = await api.getChat(state.activeChatId);
       const chat = r?.chat;
       state.messages = Array.isArray(chat?.messages)
-        ? chat.messages.map((m) => ({ role: m.role, content: m.content }))
+        ? chat.messages.map((m) => ({ role: m.role, content: m.content, ts: m.ts }))
         : [];
       renderChatHistory();
     }
 
+    function closeItemMenus() {
+      document.querySelectorAll(".item-menu.open").forEach((el) => el.classList.remove("open"));
+    }
+
+    function openItemMenu(menuEl, triggerEl) {
+      if (!menuEl || !triggerEl) return;
+      const r = triggerEl.getBoundingClientRect();
+
+      menuEl.style.left = "0px";
+      menuEl.style.top = "0px";
+      menuEl.classList.add("open");
+
+      const mw = menuEl.offsetWidth || 140;
+      const mh = menuEl.offsetHeight || 120;
+      const pad = 8;
+
+      let left = r.right - mw;
+      let top = r.bottom + 4;
+
+      if (left < pad) left = pad;
+      if (left + mw > window.innerWidth - pad) left = window.innerWidth - mw - pad;
+      if (top + mh > window.innerHeight - pad) {
+        top = Math.max(pad, r.top - mh - 4);
+      }
+
+      menuEl.style.left = `${Math.round(left)}px`;
+      menuEl.style.top = `${Math.round(top)}px`;
+    }
+
     function renderProjectList() {
       ui.projectList.innerHTML = "";
-      const q = (state.projectFilter || "").toLowerCase();
-      const rows = q
-        ? state.projects.filter((p) => (p.name || "").toLowerCase().includes(q))
-        : state.projects;
+      const q = (state.projectFilter || "").trim();
+      let rows = [...state.projects];
+      if (state.projectFilterMode === "pinned") rows = rows.filter((p) => !!p.pinned);
+      if (state.projectFilterMode === "recent") {
+        const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        rows = rows.filter((p) => Number(p.updatedAt || 0) >= since);
+      }
+      rows = rows
+        .map((p) => ({ p, score: fuzzyScore(p.name || "", q) }))
+        .filter((x) => (q ? x.score > 0 : true))
+        .sort((a, b) => b.score - a.score)
+        .map((x) => x.p);
+      const totalRows = rows.length;
+      rows = rows.slice(0, 250);
+
       for (const p of rows) {
+        const row = document.createElement("div");
+        row.className = "list-item-row";
+
         const btn = document.createElement("button");
         btn.className = "list-item" + (p.id === state.activeProjectId ? " active" : "");
         btn.type = "button";
-        btn.textContent = p.name || "Project";
+        btn.innerHTML = renderTextWithMatch(`${p.pinned ? "[PIN] " : ""}${p.name || "Project"}`, q);
         btn.onclick = async () => {
           await api.setActiveProject(p.id);
           await loadState();
         };
-        ui.projectList.appendChild(btn);
+
+        const actions = document.createElement("div");
+        actions.className = "item-actions";
+
+        const menuBtn = document.createElement("button");
+        menuBtn.className = "item-action-btn";
+        menuBtn.type = "button";
+        menuBtn.textContent = "⋯";
+        menuBtn.setAttribute("aria-label", "Project actions");
+
+        const menu = document.createElement("div");
+        menu.className = "item-menu";
+
+        const pinBtn = document.createElement("button");
+        pinBtn.type = "button";
+        pinBtn.textContent = p.pinned ? "Unpin" : "Pin";
+        pinBtn.onclick = async (e) => {
+          e.stopPropagation();
+          await api.updateProject(p.id, { pinned: !p.pinned });
+          closeItemMenus();
+          await loadState();
+        };
+
+        const duplicateBtn = document.createElement("button");
+        duplicateBtn.type = "button";
+        duplicateBtn.textContent = "Duplicate";
+        duplicateBtn.onclick = async (e) => {
+          e.stopPropagation();
+          closeItemMenus();
+          await api.duplicateProject(p.id);
+          await loadState();
+        };
+
+        const exportBtn = document.createElement("button");
+        exportBtn.type = "button";
+        exportBtn.textContent = "Export";
+        exportBtn.onclick = async (e) => {
+          e.stopPropagation();
+          const out = await api.exportProject(p.id);
+          closeItemMenus();
+          if (!out?.ok || !out?.config) return;
+          const blob = new Blob([JSON.stringify(out.config, null, 2)], { type: "application/json" });
+          const href = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = href;
+          a.download = `${(p.name || "project").replace(/[^a-z0-9-_]+/gi, "_")}.project.json`;
+          a.click();
+          URL.revokeObjectURL(href);
+        };
+
+        const renameBtn = document.createElement("button");
+        renameBtn.type = "button";
+        renameBtn.textContent = "Rename";
+        renameBtn.onclick = async (e) => {
+          e.stopPropagation();
+          const m = await openModal({
+            title: "Rename Project",
+            fields: [{ id: "name", label: "Project name", value: p.name || "Project" }],
+            confirmText: "Save",
+          });
+          const name = m?.values?.name?.trim();
+          if (!name || name === p.name) return;
+          closeItemMenus();
+          await api.updateProject(p.id, { name });
+          await loadState();
+        };
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.type = "button";
+        deleteBtn.textContent = "Delete";
+        deleteBtn.disabled = state.projects.length <= 1;
+        deleteBtn.onclick = async (e) => {
+          e.stopPropagation();
+          const m = await openModal({
+            title: "Delete Project",
+            text: `Type DELETE to remove project "${p.name}".`,
+            fields: [{ id: "confirm", label: "Confirmation", placeholder: "DELETE" }],
+            confirmText: "Delete",
+            danger: true,
+          });
+          if ((m?.values?.confirm || "").trim().toUpperCase() !== "DELETE") return;
+          closeItemMenus();
+          const r = await api.deleteProject(p.id);
+          if (r?.ok === false && r?.error) alert(r.error);
+          await loadState();
+        };
+
+        menuBtn.onclick = (e) => {
+          e.stopPropagation();
+          const open = menu.classList.contains("open");
+          closeItemMenus();
+          if (!open) openItemMenu(menu, menuBtn);
+        };
+
+        menu.appendChild(pinBtn);
+        menu.appendChild(duplicateBtn);
+        menu.appendChild(exportBtn);
+        menu.appendChild(renameBtn);
+        menu.appendChild(deleteBtn);
+        actions.appendChild(menuBtn);
+        actions.appendChild(menu);
+        row.appendChild(btn);
+        row.appendChild(actions);
+        ui.projectList.appendChild(row);
       }
       if (!rows.length) ui.projectList.textContent = "No projects.";
+      if (totalRows > rows.length) {
+        const note = document.createElement("div");
+        note.style.fontSize = "11px";
+        note.style.color = "#9aa3b2";
+        note.textContent = `Showing first ${rows.length} of ${totalRows} projects (refine search).`;
+        ui.projectList.appendChild(note);
+      }
       refreshActionButtons();
     }
 
     function renderChatList() {
       ui.chatList.innerHTML = "";
-      const q = (state.chatFilter || "").toLowerCase();
-      const rows = q
-        ? state.chats.filter((c) => (c.title || "").toLowerCase().includes(q))
-        : state.chats;
+      const q = (state.chatFilter || "").trim();
+      let rows = [...state.chats];
+      if (state.chatFilterMode === "pinned") rows = rows.filter((c) => !!c.pinned && !c.archived);
+      if (state.chatFilterMode === "recent") {
+        const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        rows = rows.filter((c) => Number(c.updatedAt || 0) >= since && !c.archived);
+      }
+      if (state.chatFilterMode === "archived") rows = rows.filter((c) => !!c.archived);
+      if (state.chatFilterMode === "all") rows = rows.filter((c) => !c.archived);
+
+      rows = rows
+        .map((c) => ({ c, score: fuzzyScore(c.title || "", q) }))
+        .filter((x) => (q ? x.score > 0 : true))
+        .sort((a, b) => b.score - a.score)
+        .map((x) => x.c);
+      const totalRows = rows.length;
+      rows = rows.slice(0, 300);
+
       for (const c of rows) {
+        const row = document.createElement("div");
+        row.className = "list-item-row";
+
         const btn = document.createElement("button");
         btn.className = "list-item" + (c.id === state.activeChatId ? " active" : "");
         btn.type = "button";
-        btn.textContent = `${c.pinned ? "📌 " : ""}${c.title || "Chat"}`;
+        btn.innerHTML = renderTextWithMatch(`${c.pinned ? "[PIN] " : ""}${c.title || "Chat"}`, q);
         btn.onclick = async () => {
           await api.setActiveChat(c.id);
           state.activeChatId = c.id;
           await loadActiveChatMessages();
           renderChatList();
         };
-        ui.chatList.appendChild(btn);
+
+        const actions = document.createElement("div");
+        actions.className = "item-actions";
+
+        const menuBtn = document.createElement("button");
+        menuBtn.className = "item-action-btn";
+        menuBtn.type = "button";
+        menuBtn.textContent = "⋯";
+        menuBtn.setAttribute("aria-label", "Chat actions");
+
+        const menu = document.createElement("div");
+        menu.className = "item-menu";
+
+        const pinBtn = document.createElement("button");
+        pinBtn.type = "button";
+        pinBtn.textContent = c.pinned ? "Unpin" : "Pin";
+        pinBtn.onclick = async (e) => {
+          e.stopPropagation();
+          await api.updateChat(c.id, { pinned: !c.pinned });
+          closeItemMenus();
+          await loadState();
+        };
+
+        const renameBtn = document.createElement("button");
+        renameBtn.type = "button";
+        renameBtn.textContent = "Rename";
+        renameBtn.onclick = async (e) => {
+          e.stopPropagation();
+          const m = await openModal({
+            title: "Rename Chat",
+            fields: [{ id: "title", label: "Chat title", value: c.title || "Chat" }],
+            confirmText: "Save",
+          });
+          const title = m?.values?.title?.trim();
+          if (!title || title === c.title) return;
+          closeItemMenus();
+          await api.updateChat(c.id, { title });
+          await loadState();
+        };
+
+        const archiveBtn = document.createElement("button");
+        archiveBtn.type = "button";
+        archiveBtn.textContent = "Archive";
+        archiveBtn.onclick = async (e) => {
+          e.stopPropagation();
+          closeItemMenus();
+          await api.archiveChat(c.id);
+          await loadState();
+        };
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.type = "button";
+        deleteBtn.textContent = "Delete";
+        deleteBtn.onclick = async (e) => {
+          e.stopPropagation();
+          const m = await openModal({
+            title: "Delete Chat",
+            text: `Type DELETE to remove chat "${c.title}".`,
+            fields: [{ id: "confirm", label: "Confirmation", placeholder: "DELETE" }],
+            confirmText: "Delete",
+            danger: true,
+          });
+          if ((m?.values?.confirm || "").trim().toUpperCase() !== "DELETE") return;
+          closeItemMenus();
+          await api.deleteChat(c.id);
+          await loadState();
+        };
+
+        menuBtn.onclick = (e) => {
+          e.stopPropagation();
+          const open = menu.classList.contains("open");
+          closeItemMenus();
+          if (!open) openItemMenu(menu, menuBtn);
+        };
+
+        menu.appendChild(pinBtn);
+        menu.appendChild(archiveBtn);
+        menu.appendChild(renameBtn);
+        menu.appendChild(deleteBtn);
+        actions.appendChild(menuBtn);
+        actions.appendChild(menu);
+        row.appendChild(btn);
+        row.appendChild(actions);
+        ui.chatList.appendChild(row);
       }
       if (!rows.length) ui.chatList.textContent = "No chats.";
+      if (totalRows > rows.length) {
+        const note = document.createElement("div");
+        note.style.fontSize = "11px";
+        note.style.color = "#9aa3b2";
+        note.textContent = `Showing first ${rows.length} of ${totalRows} chats (refine search).`;
+        ui.chatList.appendChild(note);
+      }
       refreshActionButtons();
     }
-
     async function loadWorkspaceState() {
       const p = await api.listProjects();
       state.projects = Array.isArray(p?.projects) ? p.projects : [];
       state.activeProjectId = p?.activeProjectId || state.projects[0]?.id || null;
       renderProjectList();
+      syncProjectRootControls();
 
       if (!state.activeProjectId) {
         state.chats = [];
@@ -1107,7 +1835,7 @@
         return;
       }
 
-      const c = await api.listChats(state.activeProjectId);
+      const c = await api.listChats(state.activeProjectId, { includeArchived: true });
       state.chats = Array.isArray(c?.chats) ? c.chats : [];
       state.activeChatId = c?.activeChatId || state.chats[0]?.id || null;
       renderChatList();
@@ -1124,16 +1852,78 @@
 
     function refreshActionButtons() {
       const p = getActiveProjectRecord();
-      const c = getActiveChatRecord();
+      if (ui.applyProjectRoot) ui.applyProjectRoot.disabled = !p;
+    }
 
-      if (ui.renameProject) ui.renameProject.disabled = !p;
-      if (ui.deleteProject) ui.deleteProject.disabled = !p || state.projects.length <= 1;
-      if (ui.renameChat) ui.renameChat.disabled = !c;
-      if (ui.deleteChat) ui.deleteChat.disabled = !c;
-      if (ui.togglePinChat) {
-        ui.togglePinChat.disabled = !c;
-        ui.togglePinChat.textContent = c?.pinned ? "Unpin" : "Pin";
+    function syncProjectRootControls() {
+      const p = getActiveProjectRecord();
+      document.documentElement.style.setProperty("--accent", accentFromId(p?.id || "default"));
+      if (ui.projectRootDir) {
+        ui.projectRootDir.value = p?.rootDir || ".";
+        ui.projectRootDir.disabled = !p;
       }
+      if (ui.projectRootPicker) ui.projectRootPicker.disabled = !p;
+      if (ui.pickProjectRoot) ui.pickProjectRoot.disabled = !p;
+      if (ui.projectRootStatus) {
+        ui.projectRootStatus.textContent = p
+          ? `Active project root: ${p.rootDir || "."}`
+          : "No active project selected.";
+      }
+      refreshProjectRootHealth();
+    }
+
+    async function refreshProjectRootHealth() {
+      const pathVal = String(ui.projectRootDir?.value || "").trim();
+      if (!ui.projectRootHealth) return;
+      if (!pathVal) {
+        ui.projectRootHealth.textContent = "";
+        return;
+      }
+      try {
+        const check = await api.validateDirectoryPath(pathVal);
+        if (!check?.ok) {
+          ui.projectRootHealth.textContent = `Health: invalid (${check?.error || "unknown"})`;
+          return;
+        }
+        const exists = check.exists ? "yes" : "no";
+        const isDir = check.isDirectory ? "yes" : "no";
+        const readable = check.readable ? "yes" : "no";
+        const writable = check.writable ? "yes" : "no";
+        ui.projectRootHealth.textContent = `Health: exists=${exists}, dir=${isDir}, read=${readable}, write=${writable}, resolved=${check.resolvedPath || pathVal}`;
+      } catch (e) {
+        ui.projectRootHealth.textContent = `Health check failed: ${String(e?.message || e)}`;
+      }
+    }
+
+    function getRootFromPickedDirectory(files) {
+      const first = files && files.length ? files[0] : null;
+      if (!first) return { root: "", source: "none" };
+
+      const rel = typeof first.webkitRelativePath === "string" ? first.webkitRelativePath : "";
+      const relParts = rel.split("/").filter(Boolean);
+      const folderName = relParts[0] || "";
+
+      // Some desktop shells expose absolute local file path on File.path.
+      const rawPath = typeof first.path === "string" ? first.path : "";
+      if (rawPath) {
+        const norm = rawPath.replace(/\\/g, "/");
+        const suffix = relParts.slice(1).join("/");
+        if (suffix) {
+          const lowerNorm = norm.toLowerCase();
+          const lowerSuffix = suffix.toLowerCase();
+          if (lowerNorm.endsWith(lowerSuffix)) {
+            const root = norm.slice(0, norm.length - suffix.length).replace(/[\\/]+$/, "");
+            if (root) return { root, source: "absolute" };
+          }
+        }
+        const lastSlash = Math.max(norm.lastIndexOf("/"), norm.lastIndexOf("\\"));
+        if (lastSlash > 0) {
+          return { root: norm.slice(0, lastSlash), source: "absolute" };
+        }
+      }
+
+      // Browser fallback: security model exposes only folder name.
+      return { root: folderName, source: "relative" };
     }
 
     // Tree rendering
@@ -1180,15 +1970,15 @@
 
     const api = {
       async getState() {
-        const r = await fetch("/state");
+        const r = await apiFetch("/state");
         return r.json();
       },
       async listProjects() {
-        const r = await fetch("/projects");
+        const r = await apiFetch("/projects");
         return r.json();
       },
       async createProject(payload) {
-        const r = await fetch("/projects", {
+        const r = await apiFetch("/projects", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload || {}),
@@ -1196,33 +1986,58 @@
         return r.json();
       },
       async updateProject(projectId, payload) {
-        const r = await fetch(`/projects/${encodeURIComponent(projectId)}`, {
+        const r = await apiFetch(`/projects/${encodeURIComponent(projectId)}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload || {}),
         });
         return r.json();
       },
+      async duplicateProject(projectId) {
+        const r = await apiFetch(`/projects/${encodeURIComponent(projectId)}/duplicate`, { method: "POST" });
+        return r.json();
+      },
+      async exportProject(projectId) {
+        const r = await apiFetch(`/projects/${encodeURIComponent(projectId)}/export`);
+        return r.json();
+      },
+      async importProjectConfig(config) {
+        const r = await apiFetch("/projects/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ config }),
+        });
+        return r.json();
+      },
       async deleteProject(projectId) {
-        const r = await fetch(`/projects/${encodeURIComponent(projectId)}`, {
+        const r = await apiFetch(`/projects/${encodeURIComponent(projectId)}`, {
           method: "DELETE",
         });
         return r.json();
       },
       async setActiveProject(projectId) {
-        const r = await fetch("/projects/active", {
+        const r = await apiFetch("/projects/active", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ projectId }),
         });
         return r.json();
       },
-      async listChats(projectId) {
-        const r = await fetch(`/projects/${encodeURIComponent(projectId)}/chats`);
+      async listChats(projectId, opts = {}) {
+        const includeArchived = opts.includeArchived ? "?includeArchived=true" : "";
+        const r = await apiFetch(`/projects/${encodeURIComponent(projectId)}/chats${includeArchived}`);
+        return r.json();
+      },
+      async bulkDeleteChats(projectId, payload) {
+        const r = await apiFetch(`/projects/${encodeURIComponent(projectId)}/chats/bulk-delete`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload || {}),
+        });
         return r.json();
       },
       async createChat(projectId, title) {
-        const r = await fetch(`/projects/${encodeURIComponent(projectId)}/chats`, {
+        const r = await apiFetch(`/projects/${encodeURIComponent(projectId)}/chats`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ title }),
@@ -1230,7 +2045,7 @@
         return r.json();
       },
       async setActiveChat(chatId) {
-        const r = await fetch("/chats/active", {
+        const r = await apiFetch("/chats/active", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ chatId }),
@@ -1238,25 +2053,29 @@
         return r.json();
       },
       async getChat(chatId) {
-        const r = await fetch(`/chats/${encodeURIComponent(chatId)}`);
+        const r = await apiFetch(`/chats/${encodeURIComponent(chatId)}`);
         return r.json();
       },
       async updateChat(chatId, payload) {
-        const r = await fetch(`/chats/${encodeURIComponent(chatId)}`, {
+        const r = await apiFetch(`/chats/${encodeURIComponent(chatId)}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload || {}),
         });
         return r.json();
       },
+      async archiveChat(chatId) {
+        const r = await apiFetch(`/chats/${encodeURIComponent(chatId)}/archive`, { method: "POST" });
+        return r.json();
+      },
       async deleteChat(chatId) {
-        const r = await fetch(`/chats/${encodeURIComponent(chatId)}`, {
+        const r = await apiFetch(`/chats/${encodeURIComponent(chatId)}`, {
           method: "DELETE",
         });
         return r.json();
       },
       async appendChatMessage(chatId, message) {
-        const r = await fetch(`/chats/${encodeURIComponent(chatId)}/messages`, {
+        const r = await apiFetch(`/chats/${encodeURIComponent(chatId)}/messages`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ message }),
@@ -1264,19 +2083,35 @@
         return r.json();
       },
       async saveState(patch) {
-        const r = await fetch("/state", {
+        const r = await apiFetch("/state", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(patch),
         });
         return r.json();
       },
+      async backupState(path) {
+        const r = await apiFetch("/state/backup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path }),
+        });
+        return r.json();
+      },
+      async restoreState(payload) {
+        const r = await apiFetch("/state/restore", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload || {}),
+        });
+        return r.json();
+      },
       async listModels() {
-        const r = await fetch("/models");
+        const r = await apiFetch("/models");
         return r.json();
       },
       async openFile(path) {
-        const r = await fetch("/fs/read", {
+        const r = await apiFetch("/fs/read", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ path }),
@@ -1284,15 +2119,42 @@
         return r.json();
       },
       async saveFile(path, content) {
-        const r = await fetch("/fs/write", {
+        const r = await apiFetch("/fs/write", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ path, content }),
         });
         return r.json();
       },
+      async pickDirectoryPath() {
+        const r = await apiFetch("/fs/pick-directory", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        return r.json();
+      },
+      async validateDirectoryPath(path) {
+        const r = await apiFetch("/fs/validate-directory", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path }),
+        });
+        return r.json();
+      },
+      async dryRunRoot(path) {
+        const r = await apiFetch("/fs/dry-run-root", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path }),
+        });
+        return r.json();
+      },
+      async listRecentRoots() {
+        const r = await apiFetch("/fs/recent-roots");
+        return r.json();
+      },
       async getPerf(limit = 120) {
-        const r = await fetch(`/perf?limit=${limit}`);
+        const r = await apiFetch(`/perf?limit=${limit}`);
         if (r.status === 404) return { ok: false, missing: true };
         return r.json();
       },
@@ -1300,13 +2162,14 @@
       async *chatStream(messages, temperature = 0.2, signal) {
         let r;
         try {
-          r = await fetch("/chat", {
+          r = await apiFetch("/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               model: ui.modelSelect.value || undefined,
               messages,
               temperature,
+              max_tokens: Number(ui.maxTokensInput?.value || 4096) || 4096,
               stream: true,
             }),
             signal,
@@ -1413,12 +2276,18 @@
                   yield accum;
                 }
               } else if (eventType === "tool_result") {
+                pushToolEvent("result", `${payload.tool || "tool"} => ${JSON.stringify(payload.result).slice(0, 180)}`);
                 yield {
                   isToolResult: true,
                   tool: payload.tool,
                   result: payload.result,
                 };
+              } else if (eventType === "tool_call") {
+                pushToolEvent("call", `${payload.tool || "tool"} ${JSON.stringify(payload.args || {})}`);
+              } else if (eventType === "tool_done") {
+                pushToolEvent("done", `${payload.tool || "tool"} (${payload.status || "ok"}, ${payload.elapsedMs || 0}ms)`);
               } else if (eventType === "retry") {
+                pushToolEvent("retry", `${payload.reason || "upstream retry"} (${payload.attempt}/${payload.max})`);
                 yield {
                   type: "retry",
                   attempt: payload.attempt,
@@ -1427,6 +2296,7 @@
               } else if (eventType === "error") {
                 const msg =
                   payload.message || "Unexpected error from backend.";
+                pushToolEvent("error", msg);
                 yield { type: "error", message: msg };
               }
             }
@@ -1525,11 +2395,39 @@
     }
 
     async function loadState() {
-      await loadWorkspaceState();
-      const s = await api.getState();
+      let s;
+      try {
+        await loadWorkspaceState();
+        s = await api.getState();
+      } catch (e) {
+        if (String(e?.message || "").includes("Unauthorized")) {
+          const m = await openModal({
+            title: "Session Token Required",
+            text: "Enter dashboard session token.",
+            fields: [{ id: "token", label: "Token", type: "text", value: state.authToken || "" }],
+            confirmText: "Unlock",
+            cancelText: "Cancel",
+          });
+          const token = String(m?.values?.token || "").trim();
+          if (!token) return;
+          state.authToken = token;
+          localStorage.setItem("dashboardAuthToken", token);
+          await loadState();
+          return;
+        }
+        throw e;
+      }
       ui.apiBase.value = s.apiBase || "";
-      ui.rootDir.value = s.rootDir || ".";
       ui.mcpEnabled.checked = !!s.mcpEnabled;
+      if (ui.temperatureInput) ui.temperatureInput.value = String(s.temperature ?? 0.2);
+      if (ui.maxTokensInput) ui.maxTokensInput.value = String(s.maxTokens ?? 4096);
+      if (ui.showTimestamps) ui.showTimestamps.checked = !!state.showTimestamps;
+      if (ui.compactMode) ui.compactMode.checked = !!state.compactMode;
+      if (ui.sessionTokenInput) ui.sessionTokenInput.value = state.authToken || "";
+      if (ui.projectFilterMode) ui.projectFilterMode.value = state.projectFilterMode || "all";
+      if (ui.chatFilterMode) ui.chatFilterMode.value = state.chatFilterMode || "all";
+      document.body.classList.toggle("compact", !!state.compactMode);
+      syncProjectRootControls();
 
       try {
         const md = await api.listModels();
@@ -1558,7 +2456,7 @@
       }
 
       try {
-        const r = await fetch("/models");
+        const r = await apiFetch("/models");
         ui.llmHealth.className = "pill " + (r.ok ? "ok" : "err");
         ui.llmHealth.textContent = r.ok ? "LLM: OK" : "LLM: DOWN";
       } catch {
@@ -1570,11 +2468,20 @@
     }
 
     ui.saveState.onclick = async () => {
+      const temp = Number(ui.temperatureInput?.value || "0.2");
+      const maxT = Number(ui.maxTokensInput?.value || "4096");
+      state.showTimestamps = !!ui.showTimestamps?.checked;
+      state.compactMode = !!ui.compactMode?.checked;
+      state.authToken = String(ui.sessionTokenInput?.value || "").trim();
+      localStorage.setItem("dashboardAuthToken", state.authToken);
+      localStorage.setItem("showTimestamps", state.showTimestamps ? "true" : "false");
+      localStorage.setItem("compactMode", state.compactMode ? "true" : "false");
       await api.saveState({
         apiBase: ui.apiBase.value,
         model: ui.modelSelect.value,
-        rootDir: ui.rootDir.value,
         mcpEnabled: ui.mcpEnabled.checked,
+        temperature: Number.isFinite(temp) ? temp : 0.2,
+        maxTokens: Number.isFinite(maxT) ? maxT : 4096,
       });
       await loadState();
     };
@@ -1582,95 +2489,258 @@
       await loadState();
     };
     ui.newProject.onclick = async () => {
-      const name = prompt("Project name");
+      let suggestedRoot = String(ui.projectRootDir?.value || ".").trim() || ".";
+      try {
+        const recents = await api.listRecentRoots();
+        const firstWritable = (recents?.roots || []).find((r) => r?.exists && r?.isDirectory && r?.writable);
+        if (firstWritable?.resolvedPath) suggestedRoot = firstWritable.resolvedPath;
+      } catch { }
+      const m = await openModal({
+        title: "New Project",
+        fields: [
+          { id: "name", label: "Project name", placeholder: "My Project" },
+          { id: "root", label: "Root folder", value: suggestedRoot },
+        ],
+        confirmText: "Create",
+      });
+      const name = m?.values?.name?.trim();
       if (!name) return;
-      await api.createProject({ name });
+      const rootDir = (m?.values?.root || "").trim() || ".";
+      await api.createProject({
+        name,
+        rootDir,
+        mcpEnabled: !!ui.mcpEnabled?.checked,
+        temperature: Number(ui.temperatureInput?.value || 0.2),
+        maxTokens: Number(ui.maxTokensInput?.value || 4096),
+      });
       await loadState();
     };
     ui.newChat.onclick = async () => {
       if (!state.activeProjectId) return;
-      const title = prompt("Chat title (optional)") || "New chat";
+      const m = await openModal({
+        title: "New Chat",
+        fields: [{ id: "title", label: "Chat title", value: "New chat" }],
+        confirmText: "Create",
+      });
+      const title = (m?.values?.title || "").trim() || "New chat";
       await api.createChat(state.activeProjectId, title);
       await loadState();
     };
-    ui.renameProject.onclick = async () => {
-      const p = getActiveProjectRecord();
-      if (!p) return;
-      const name = prompt("Rename project", p.name || "Project");
-      if (!name || name === p.name) return;
-      await api.updateProject(p.id, { name });
-      await loadState();
-    };
-    ui.deleteProject.onclick = async () => {
-      const p = getActiveProjectRecord();
-      if (!p) return;
-      const ok = confirm(`Delete project "${p.name}"?`);
-      if (!ok) return;
-      const r = await api.deleteProject(p.id);
-      if (r?.ok === false && r?.error) alert(r.error);
-      await loadState();
-    };
-    ui.renameChat.onclick = async () => {
-      const c = getActiveChatRecord();
-      if (!c) return;
-      const title = prompt("Rename chat", c.title || "Chat");
-      if (!title || title === c.title) return;
-      await api.updateChat(c.id, { title });
-      await loadState();
-    };
-    ui.togglePinChat.onclick = async () => {
-      const c = getActiveChatRecord();
-      if (!c) return;
-      await api.updateChat(c.id, { pinned: !c.pinned });
-      await loadState();
-    };
-    ui.deleteChat.onclick = async () => {
-      const c = getActiveChatRecord();
-      if (!c) return;
-      const ok = confirm(`Delete chat "${c.title}"?`);
-      if (!ok) return;
-      await api.deleteChat(c.id);
-      await loadState();
-    };
-    ui.projectSearch?.addEventListener("input", (e) => {
+    ui.projectSearch?.addEventListener("input", debounce((e) => {
       state.projectFilter = String(e.target?.value || "");
       renderProjectList();
+    }, 120));
+    ui.projectFilterMode?.addEventListener("change", (e) => {
+      state.projectFilterMode = String(e.target?.value || "all");
+      renderProjectList();
     });
-    ui.chatSearch?.addEventListener("input", (e) => {
+    ui.chatSearch?.addEventListener("input", debounce((e) => {
       state.chatFilter = String(e.target?.value || "");
       renderChatList();
+    }, 120));
+    ui.chatFilterMode?.addEventListener("change", (e) => {
+      state.chatFilterMode = String(e.target?.value || "all");
+      renderChatList();
+    });
+    ui.importProject?.addEventListener("click", async () => {
+      const m = await openModal({
+        title: "Import Project Config",
+        text: "Paste exported project JSON.",
+        fields: [{ id: "json", type: "textarea", rows: 12, placeholder: "{ ... }" }],
+        confirmText: "Import",
+      });
+      const raw = m?.values?.json?.trim();
+      if (!raw) return;
+      try {
+        const cfg = JSON.parse(raw);
+        const r = await api.importProjectConfig(cfg);
+        if (r?.ok === false && r?.error) throw new Error(r.error);
+        await loadState();
+      } catch (e) {
+        await openModal({ title: "Import Failed", text: String(e?.message || e), confirmText: "OK", cancelText: "Close" });
+      }
+    });
+    ui.backupState?.addEventListener("click", async () => {
+      const r = await api.backupState();
+      const txt = r?.backup?.path ? `Backup created:\n${r.backup.path}` : (r?.error || "Backup failed");
+      await openModal({ title: "Backup State", text: txt, confirmText: "OK", cancelText: "Close" });
+    });
+    ui.restoreState?.addEventListener("click", async () => {
+      const m = await openModal({
+        title: "Restore State",
+        text: "Paste UI state JSON to restore.",
+        fields: [{ id: "json", type: "textarea", rows: 12, placeholder: "{ ... }" }],
+        confirmText: "Restore",
+        danger: true,
+      });
+      const raw = m?.values?.json?.trim();
+      if (!raw) return;
+      try {
+        const payload = JSON.parse(raw);
+        const r = await api.restoreState({ state: payload });
+        if (r?.ok === false && r?.error) throw new Error(r.error);
+        await loadState();
+      } catch (e) {
+        await openModal({ title: "Restore Failed", text: String(e?.message || e), confirmText: "OK", cancelText: "Close" });
+      }
+    });
+    ui.bulkDeleteChats?.addEventListener("click", async () => {
+      if (!state.activeProjectId) return;
+      const m = await openModal({
+        title: "Bulk Delete Chats",
+        text: "Type DELETE to remove non-pinned chats from active project.",
+        fields: [{ id: "confirm", label: "Confirmation", placeholder: "DELETE" }],
+        confirmText: "Delete",
+        danger: true,
+      });
+      if ((m?.values?.confirm || "").trim().toUpperCase() !== "DELETE") return;
+      const r = await api.bulkDeleteChats(state.activeProjectId, { includePinned: false, includeArchived: true });
+      if (r?.ok === false && r?.error) {
+        await openModal({ title: "Bulk Delete", text: r.error, confirmText: "OK", cancelText: "Close" });
+      }
+      await loadState();
     });
     ui.perfRefresh.onclick = async () => {
       await refreshPerfPanel();
     };
     ui.tabProjects?.addEventListener("click", () => setSidebarTab("projects"));
     ui.tabSettings?.addEventListener("click", () => setSidebarTab("settings"));
+    ui.tabTools?.addEventListener("click", () => setSidebarTab("tools"));
     ui.tabPerf?.addEventListener("click", () => setSidebarTab("perf"));
+    ui.clearToolLog?.addEventListener("click", () => {
+      state.toolEvents = [];
+      renderToolLog();
+    });
+    ui.projectRootDir?.addEventListener("input", () => {
+      refreshProjectRootHealth();
+    });
 
-    // Folder picker -> populate rootDir with selected folder name
-    ui.rootPicker?.addEventListener("change", (e) => {
-      const files = e.target.files;
-      if (!files || files.length === 0) return;
+    function toggleSection(el) {
+      if (!el) return;
+      el.classList.toggle("collapsed");
+    }
 
-      const firstPath = files[0].webkitRelativePath || "";
-      const folderName = firstPath.split("/")[0] || "";
+    ui.toggleProjectsSection?.addEventListener("click", () => toggleSection(ui.projectsSection));
+    ui.toggleProjectRootSection?.addEventListener("click", () => toggleSection(ui.projectRootSection));
 
-      if (!folderName) return;
+    // Project folder picker -> populate active project's root input
+    ui.pickProjectRoot?.addEventListener("click", async () => {
+      const p = getActiveProjectRecord();
+      if (!p) return;
 
-      ui.rootDir.value = folderName;
-
-      if (ui.rootPickStatus) {
-        ui.rootPickStatus.textContent = `Selected folder: ${folderName} (${files.length} files)`;
+      try {
+        const nativePick = await api.pickDirectoryPath();
+        if (nativePick?.ok && typeof nativePick.path === "string" && nativePick.path.trim()) {
+          if (ui.projectRootDir) ui.projectRootDir.value = nativePick.path.trim();
+          if (ui.projectRootStatus) {
+            ui.projectRootStatus.textContent = `Picked local path: ${nativePick.path}. Click Apply Root.`;
+          }
+          return;
+        }
+        if (nativePick?.canceled) {
+          if (ui.projectRootStatus) ui.projectRootStatus.textContent = "Folder selection cancelled.";
+          return;
+        }
+        if (ui.projectRootStatus) {
+          ui.projectRootStatus.textContent =
+            "Native folder picker did not return a full local path. Paste full path manually (e.g. E:\\Projects\\MyApp), then Apply Root.";
+        }
+        return;
+      } catch (e) {
+        if (String(e?.name || "") !== "AbortError" && ui.projectRootStatus) {
+          ui.projectRootStatus.textContent = `Folder picker failed: ${String(e?.message || e)}`;
+        }
+        return;
       }
     });
 
-    // Optional: button just confirms / re-writes status (does not auto-save)
-    ui.usePickedRoot?.addEventListener("click", () => {
-      const v = (ui.rootDir.value || "").trim();
-      if (ui.rootPickStatus) {
-        ui.rootPickStatus.textContent = v
-          ? `Root input set to: ${v} (click Save to persist)`
-          : "No folder selected yet.";
+    ui.projectRootPicker?.addEventListener("change", (e) => {
+      const files = e.target.files;
+      if (!files || files.length === 0) return;
+
+      const picked = getRootFromPickedDirectory(files);
+      if (!picked.root) return;
+      if (picked.source === "relative" && /\.[a-z0-9]{1,8}$/i.test(picked.root)) {
+        if (ui.projectRootStatus) {
+          ui.projectRootStatus.textContent =
+            "That looks like a file, not a folder. Please choose a folder or type the full path manually.";
+        }
+        return;
+      }
+      if (ui.projectRootDir) ui.projectRootDir.value = picked.root;
+
+      if (ui.projectRootStatus) {
+        if (picked.source === "absolute") {
+          ui.projectRootStatus.textContent = `Picked local path: ${picked.root}. Click Apply Root.`;
+        } else {
+          ui.projectRootStatus.textContent = `Picked folder name: ${picked.root}. Browser did not expose full path; edit if needed, then Apply Root.`;
+        }
+      }
+    });
+
+    ui.applyProjectRoot?.addEventListener("click", async () => {
+      const p = getActiveProjectRecord();
+      if (!p) return;
+
+      const nextRootInput = String(ui.projectRootDir?.value || "").trim();
+      if (!nextRootInput) {
+        if (ui.projectRootStatus) ui.projectRootStatus.textContent = "Please enter a folder path.";
+        return;
+      }
+
+      const check = await api.validateDirectoryPath(nextRootInput);
+      if (!check?.ok) {
+        if (ui.projectRootStatus) {
+          ui.projectRootStatus.textContent = `Validation failed: ${check?.error || "unknown error"}`;
+        }
+        return;
+      }
+      if (!check.exists) {
+        if (ui.projectRootStatus) {
+          ui.projectRootStatus.textContent = `Path does not exist: ${check.resolvedPath || nextRootInput}`;
+        }
+        return;
+      }
+      if (!check.isDirectory) {
+        if (ui.projectRootStatus) {
+          ui.projectRootStatus.textContent = `Not a folder: ${check.resolvedPath || nextRootInput}`;
+        }
+        return;
+      }
+      if (!check.readable || !check.writable) {
+        if (ui.projectRootStatus) {
+          ui.projectRootStatus.textContent = `Folder access issue: read=${check.readable ? "yes" : "no"}, write=${check.writable ? "yes" : "no"}`;
+        }
+        return;
+      }
+
+      const nextRoot = String(check.resolvedPath || nextRootInput);
+      if (ui.projectRootDir) ui.projectRootDir.value = nextRoot;
+
+      const r = await api.updateProject(p.id, { rootDir: nextRoot });
+      if (r?.ok === false && r?.error) {
+        if (ui.projectRootStatus) ui.projectRootStatus.textContent = `Failed: ${r.error}`;
+        return;
+      }
+
+      if (ui.projectRootStatus) ui.projectRootStatus.textContent = `Saved root for "${p.name}": ${nextRoot}`;
+      await loadState();
+    });
+
+    ui.dryRunRoot?.addEventListener("click", async () => {
+      const pathVal = String(ui.projectRootDir?.value || "").trim();
+      if (!pathVal) return;
+      const r = await api.dryRunRoot(pathVal);
+      if (!r?.ok) {
+        if (ui.projectRootStatus) ui.projectRootStatus.textContent = `Dry-run failed: ${r?.error || "unknown"}`;
+        return;
+      }
+      const count = Array.isArray(r.preview) ? r.preview.length : 0;
+      if (ui.projectRootStatus) {
+        ui.projectRootStatus.textContent = `Dry-run OK: ${count} entries previewed, readable=${r?.health?.readable}, writable=${r?.health?.writable}`;
+      }
+      if (ui.projectRootHealth) {
+        ui.projectRootHealth.textContent = `Health: exists=yes, dir=yes, read=${r?.health?.readable ? "yes" : "no"}, write=${r?.health?.writable ? "yes" : "no"}`;
       }
     });
 
@@ -1717,6 +2787,7 @@
       collapseAllExchanges();
 
       const userMessage = buildUserMessage(text, imageDataUrl);
+      userMessage.ts = Date.now();
       state.messages.push(userMessage);
       if (state.activeChatId) {
         await api.appendChatMessage(state.activeChatId, userMessage);
@@ -1815,11 +2886,18 @@
       };
 
       // Retry button: spin up a brand-new exchange with the same question
-      retryBtn.onclick = (e) => {
+      retryBtn.onclick = async (e) => {
         e.stopPropagation();
         // Optional: don't allow retry while this one is still streaming
         if (spinner.classList.contains("active")) return;
-        startExchange({ text, imageDataUrl });
+        const m = await openModal({
+          title: "Edit & Resend",
+          fields: [{ id: "text", label: "Message", type: "textarea", rows: 5, value: text || "" }],
+          confirmText: "Send",
+        });
+        const nextText = String(m?.values?.text || "").trim();
+        if (!nextText && !imageDataUrl) return;
+        startExchange({ text: nextText, imageDataUrl });
       };
 
       const userBubble = bubble("user", text || (imageDataUrl ? "[Image attached]" : ""), body);
@@ -1853,7 +2931,7 @@
 
         // 1) Tell backend to abort LM Studio stream
         try {
-          await fetch("/abort", { method: "POST" });
+          await apiFetch("/abort", { method: "POST" });
         } catch (err) {
           console.warn("Failed to send abort to backend:", err);
         }
@@ -1979,12 +3057,27 @@
         }
       }
 
-      const assistantMessage = { role: "assistant", content: shown };
+      const assistantMessage = { role: "assistant", content: shown, ts: Date.now() };
       state.messages.push(assistantMessage);
       if (state.activeChatId) {
         await api.appendChatMessage(state.activeChatId, assistantMessage);
       }
     }
+
+    // Send button now just delegates to startExchange
+    ui.regenerate?.addEventListener("click", () => {
+      let lastUser = null;
+      for (let i = state.messages.length - 1; i >= 0; i--) {
+        if (state.messages[i]?.role === "user") {
+          lastUser = state.messages[i];
+          break;
+        }
+      }
+      if (!lastUser) return;
+      const parsed = parseContentForDisplay(lastUser.content);
+      if (!parsed.text && !parsed.imageUrl) return;
+      startExchange({ text: parsed.text, imageDataUrl: parsed.imageUrl });
+    });
 
     // Send button now just delegates to startExchange
     ui.send.onclick = () => {
@@ -2032,6 +3125,7 @@
     document.addEventListener("click", (e) => {
       const target = e.target;
       if (!(target instanceof Element)) return;
+      if (!target.closest(".item-actions")) closeItemMenus();
       if (target.closest(".add-menu-wrap")) return;
       closeAddMenu();
     });

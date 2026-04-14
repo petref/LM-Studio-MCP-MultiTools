@@ -7,11 +7,14 @@ export type ProjectSettings = {
   apiBase: string;
   model?: string;
   mcpEnabled: boolean;
+  temperature: number;
+  maxTokens: number;
 };
 
 export type ProjectRecord = ProjectSettings & {
   id: string;
   name: string;
+  pinned: boolean;
   createdAt: number;
   updatedAt: number;
 };
@@ -35,6 +38,7 @@ export type ChatWindowRecord = {
   projectId: string;
   title: string;
   pinned: boolean;
+  archived: boolean;
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
@@ -77,11 +81,17 @@ function asBool(v: unknown, fallback = false): boolean {
 }
 
 function sanitizeProjectSettings(settings: Partial<ProjectSettings>, fallback: ProjectSettings): ProjectSettings {
+  const tempRaw = Number((settings as any).temperature);
+  const maxRaw = Number((settings as any).maxTokens);
+  const temperature = Number.isFinite(tempRaw) ? Math.max(0, Math.min(2, tempRaw)) : fallback.temperature;
+  const maxTokens = Number.isFinite(maxRaw) ? Math.max(128, Math.min(128000, Math.round(maxRaw))) : fallback.maxTokens;
   return {
     rootDir: asString(settings.rootDir, fallback.rootDir),
     apiBase: asString(settings.apiBase, fallback.apiBase),
     model: asString(settings.model, fallback.model || ""),
     mcpEnabled: asBool(settings.mcpEnabled, fallback.mcpEnabled),
+    temperature,
+    maxTokens,
   };
 }
 
@@ -92,6 +102,7 @@ function defaultChat(projectId: string): ChatWindowRecord {
     projectId,
     title: "New chat",
     pinned: false,
+    archived: false,
     createdAt: ts,
     updatedAt: ts,
     messages: [],
@@ -104,13 +115,14 @@ function defaultState(defaultSettings: ProjectSettings): UIState {
   const project: ProjectRecord = {
     id: projectId,
     name: "Default",
+    pinned: false,
     createdAt: ts,
     updatedAt: ts,
     ...defaultSettings,
   };
   const chat = defaultChat(projectId);
   return {
-    version: 1,
+    version: 2,
     activeProjectId: projectId,
     activeChatId: chat.id,
     projects: [project],
@@ -131,6 +143,7 @@ function normalizeState(raw: unknown, fallbackSettings: ProjectSettings): UIStat
       return {
         id: asString(p?.id, randomUUID()),
         name: asString(p?.name, "Project"),
+        pinned: asBool(p?.pinned, false),
         createdAt: typeof p?.createdAt === "number" ? p.createdAt : ts,
         updatedAt: typeof p?.updatedAt === "number" ? p.updatedAt : ts,
         ...merged,
@@ -148,6 +161,7 @@ function normalizeState(raw: unknown, fallbackSettings: ProjectSettings): UIStat
       projectId: asString(c?.projectId, ""),
       title: asString(c?.title, "Chat"),
       pinned: asBool(c?.pinned, false),
+      archived: asBool(c?.archived, false),
       createdAt: typeof c?.createdAt === "number" ? c.createdAt : ts,
       updatedAt: typeof c?.updatedAt === "number" ? c.updatedAt : ts,
       messages: Array.isArray(c?.messages) ? c.messages : [],
@@ -172,7 +186,7 @@ function normalizeState(raw: unknown, fallbackSettings: ProjectSettings): UIStat
       : activeChatCandidates[0]?.id || chats[0]?.id || null;
 
   return {
-    version: 1,
+    version: 2,
     activeProjectId,
     activeChatId,
     projects,
@@ -227,13 +241,15 @@ export async function setActiveProject(projectId: string): Promise<UIState> {
     if (!project) throw new Error("Project not found");
     st.activeProjectId = project.id;
     const chats = st.chats.filter((c) => c.projectId === project.id);
-    st.activeChatId = chats[0]?.id || null;
+    const live = chats.find((c) => !c.archived);
+    st.activeChatId = live?.id || chats[0]?.id || null;
   });
 }
 
 export async function listProjects() {
   const st = getUIState();
   const projects = [...st.projects].sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
     if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
     return a.name.localeCompare(b.name);
   });
@@ -246,6 +262,7 @@ export async function createProject(input: Partial<ProjectRecord>, fallback: Pro
     const project: ProjectRecord = {
       id: randomUUID(),
       name: asString(input.name, `Project ${st.projects.length + 1}`),
+      pinned: asBool((input as any).pinned, false),
       createdAt: ts,
       updatedAt: ts,
       ...sanitizeProjectSettings(input, fallback),
@@ -264,6 +281,7 @@ export async function updateProject(projectId: string, patch: Partial<ProjectRec
     if (!p) throw new Error("Project not found");
     const nextSettings = sanitizeProjectSettings(patch, fallback);
     p.name = asString(patch.name, p.name);
+    if (typeof (patch as any).pinned === "boolean") p.pinned = (patch as any).pinned;
     p.rootDir = nextSettings.rootDir;
     p.apiBase = nextSettings.apiBase;
     p.model = nextSettings.model;
@@ -290,10 +308,11 @@ export async function deleteProject(projectId: string) {
   });
 }
 
-export async function listChats(projectId: string) {
+export async function listChats(projectId: string, opts?: { includeArchived?: boolean }) {
   const st = getUIState();
+  const includeArchived = opts?.includeArchived === true;
   const chats = st.chats
-    .filter((c) => c.projectId === projectId)
+    .filter((c) => c.projectId === projectId && (includeArchived || !c.archived))
     .sort((a, b) => {
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
       if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
@@ -319,6 +338,7 @@ export async function createChat(projectId: string, title?: string) {
       projectId,
       title: title?.trim() || "New chat",
       pinned: false,
+      archived: false,
       createdAt: ts,
       updatedAt: ts,
       messages: [],
@@ -336,6 +356,7 @@ export async function updateChat(chatId: string, patch: Partial<ChatWindowRecord
     if (!chat) throw new Error("Chat not found");
     if (typeof patch.title === "string") chat.title = patch.title;
     if (typeof patch.pinned === "boolean") chat.pinned = patch.pinned;
+    if (typeof patch.archived === "boolean") chat.archived = patch.archived;
     if (Array.isArray(patch.messages)) chat.messages = patch.messages as ChatMessage[];
     chat.updatedAt = now();
     const project = st.projects.find((p) => p.id === chat.projectId);
@@ -366,6 +387,7 @@ export async function setActiveChat(chatId: string) {
   return updateState((st) => {
     const chat = st.chats.find((c) => c.id === chatId);
     if (!chat) throw new Error("Chat not found");
+    if (chat.archived) throw new Error("Cannot activate archived chat");
     st.activeChatId = chat.id;
     st.activeProjectId = chat.projectId;
   });
@@ -388,4 +410,133 @@ export async function deleteChat(chatId: string) {
     const project = st.projects.find((p) => p.id === chat.projectId);
     if (project) project.updatedAt = now();
   });
+}
+
+export async function archiveChat(chatId: string) {
+  return updateState((st) => {
+    const chat = st.chats.find((c) => c.id === chatId);
+    if (!chat) throw new Error("Chat not found");
+    chat.archived = true;
+    chat.updatedAt = now();
+
+    if (st.activeChatId === chatId) {
+      const next = st.chats.find((c) => c.projectId === chat.projectId && !c.archived && c.id !== chatId);
+      st.activeChatId = next?.id || null;
+    }
+
+    const project = st.projects.find((p) => p.id === chat.projectId);
+    if (project) project.updatedAt = now();
+  });
+}
+
+export async function bulkDeleteChats(projectId: string, opts?: { includePinned?: boolean; includeArchived?: boolean }) {
+  return updateState((st) => {
+    const includePinned = opts?.includePinned === true;
+    const includeArchived = opts?.includeArchived === true;
+
+    const keep: ChatWindowRecord[] = [];
+    let deleted = 0;
+    for (const chat of st.chats) {
+      if (chat.projectId !== projectId) {
+        keep.push(chat);
+        continue;
+      }
+      if (!includeArchived && chat.archived) {
+        keep.push(chat);
+        continue;
+      }
+      if (!includePinned && chat.pinned) {
+        keep.push(chat);
+        continue;
+      }
+      deleted++;
+    }
+    st.chats = keep;
+
+    const hasLive = st.chats.some((c) => c.projectId === projectId && !c.archived);
+    if (!hasLive) st.chats.push(defaultChat(projectId));
+
+    if (st.activeProjectId === projectId) {
+      const next = st.chats.find((c) => c.projectId === projectId && !c.archived);
+      st.activeChatId = next?.id || null;
+    }
+
+    const project = st.projects.find((p) => p.id === projectId);
+    if (project) project.updatedAt = now();
+    if (deleted === 0) throw new Error("No chats matched deletion filter");
+  });
+}
+
+export async function duplicateProject(projectId: string, fallback: ProjectSettings) {
+  return updateState((st) => {
+    const source = st.projects.find((p) => p.id === projectId);
+    if (!source) throw new Error("Project not found");
+    const ts = now();
+    const cloned: ProjectRecord = {
+      id: randomUUID(),
+      name: `${source.name} Copy`,
+      pinned: false,
+      createdAt: ts,
+      updatedAt: ts,
+      ...sanitizeProjectSettings(source, fallback),
+    };
+    st.projects.push(cloned);
+    const chat = defaultChat(cloned.id);
+    st.chats.push(chat);
+    st.activeProjectId = cloned.id;
+    st.activeChatId = chat.id;
+  });
+}
+
+export function exportProjectConfig(projectId: string) {
+  const st = getUIState();
+  const p = st.projects.find((x) => x.id === projectId);
+  if (!p) throw new Error("Project not found");
+  return {
+    version: 1,
+    exportedAt: Date.now(),
+    project: {
+      name: p.name,
+      pinned: p.pinned,
+      rootDir: p.rootDir,
+      apiBase: p.apiBase,
+      model: p.model,
+      mcpEnabled: p.mcpEnabled,
+      temperature: p.temperature,
+      maxTokens: p.maxTokens,
+    },
+  };
+}
+
+export async function importProjectConfig(input: any, fallback: ProjectSettings) {
+  const raw = input?.project || input;
+  if (!raw || typeof raw !== "object") throw new Error("Invalid project config payload");
+  return createProject(
+    {
+      name: asString(raw.name, undefined as any),
+      pinned: asBool(raw.pinned, false),
+      rootDir: asString(raw.rootDir, fallback.rootDir),
+      apiBase: asString(raw.apiBase, fallback.apiBase),
+      model: asString(raw.model, fallback.model || ""),
+      mcpEnabled: asBool(raw.mcpEnabled, fallback.mcpEnabled),
+      temperature: Number(raw.temperature),
+      maxTokens: Number(raw.maxTokens),
+    } as any,
+    fallback
+  );
+}
+
+export async function backupUIState(filePath?: string) {
+  const st = getUIState();
+  const target = path.resolve(filePath || `db/ui_state.backup.${Date.now()}.json`);
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(target, JSON.stringify(st, null, 2), "utf8");
+  return { path: target };
+}
+
+export async function restoreUIState(payload: any, fallback: ProjectSettings) {
+  const normalized = normalizeState(payload, fallback);
+  cache = normalized;
+  await writeStateFile(normalized);
+  return normalized;
 }

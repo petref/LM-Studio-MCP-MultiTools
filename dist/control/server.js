@@ -4,11 +4,12 @@ import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { initRuntime, getRuntime, saveRuntime } from "../runtime/index.js";
-import { TextDecoder } from "node:util";
+import { TextDecoder, promisify } from "node:util";
 import { attachMCPToServer } from "../mcp/server.js";
 import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
 import { Agent } from "undici";
-import { appendChatMessage, createChat, createProject, deleteChat, deleteProject, getActiveProject, getChat, getUIState, initUIState, listChats, listProjects, setActiveChat, setActiveProject, updateChat, updateProject, } from "./stateStore.js";
+import { appendChatMessage, archiveChat, backupUIState, bulkDeleteChats, createChat, createProject, deleteChat, deleteProject, duplicateProject, exportProjectConfig, getActiveProject, getChat, getUIState, importProjectConfig, initUIState, listChats, listProjects, restoreUIState, setActiveChat, setActiveProject, updateChat, updateProject, } from "./stateStore.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 // ---------------- Constants ----------------
@@ -23,6 +24,7 @@ const MODELS_CACHE_TTL_MS = 10_000;
 const MAX_TREE_CONCURRENCY = Math.max(1, Number(process.env.TREE_CONCURRENCY || 8));
 const PERF_LOGS_ENABLED = (process.env.PERF_LOGS || "false").toLowerCase() === "true";
 const MAX_PERF_EVENTS = Math.max(50, Number(process.env.PERF_EVENTS_MAX || 400));
+const DASHBOARD_AUTH_TOKEN = (process.env.DASHBOARD_AUTH_TOKEN || "").trim();
 const IGNORED_DIRS = new Set([
     "node_modules",
     ".git",
@@ -43,6 +45,7 @@ const longLMAgent = new Agent({
     bodyTimeout: 0,
     connectTimeout: 0,
 });
+const execFileAsync = promisify(execFile);
 function elapsedMs(startedAt) {
     return Number((process.hrtime.bigint() - startedAt) / 1000000n);
 }
@@ -122,6 +125,13 @@ function json(res, obj, code = 200) {
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify(obj));
 }
+function isAuthorized(req) {
+    if (!DASHBOARD_AUTH_TOKEN)
+        return true;
+    const candidate = String(req.headers?.["x-dashboard-token"] || "") ||
+        String(req.headers?.authorization || "").replace(/^Bearer\s+/i, "");
+    return candidate === DASHBOARD_AUTH_TOKEN;
+}
 async function readJsonBody(req) {
     return await new Promise((resolve, reject) => {
         let body = "";
@@ -157,6 +167,8 @@ let dashboardState = {
     model: getRuntime().model,
     rootDir: getRuntime().rootDir || ".",
     mcpEnabled: getRuntime().mcpEnabled !== false,
+    temperature: 0.2,
+    maxTokens: 4096,
 };
 let modelsCache = null;
 function projectSettingsFallback() {
@@ -165,6 +177,8 @@ function projectSettingsFallback() {
         apiBase: dashboardState.apiBase || LM_CHAT_URL,
         model: dashboardState.model,
         mcpEnabled: dashboardState.mcpEnabled !== false,
+        temperature: 0.2,
+        maxTokens: 4096,
     };
 }
 function applyProjectToDashboard(project) {
@@ -174,6 +188,8 @@ function applyProjectToDashboard(project) {
         apiBase: normalizeApiBase(project.apiBase || dashboardState.apiBase),
         model: project.model || dashboardState.model,
         mcpEnabled: project.mcpEnabled !== false,
+        temperature: project.temperature ?? dashboardState.temperature ?? 0.2,
+        maxTokens: project.maxTokens ?? dashboardState.maxTokens ?? 4096,
     };
 }
 async function syncActiveProjectIntoRuntime() {
@@ -294,6 +310,53 @@ async function writeFileSafe(rel, content) {
     await fs.mkdir(path.dirname(abs), { recursive: true });
     await fs.writeFile(abs, content ?? "", "utf8");
 }
+async function pickDirectoryNative() {
+    if (process.platform !== "win32") {
+        throw new Error("Native folder picker currently supports Windows only");
+    }
+    const script = [
+        "Add-Type -AssemblyName System.Windows.Forms",
+        "$dlg = New-Object System.Windows.Forms.FolderBrowserDialog",
+        "$dlg.Description = 'Select project root folder'",
+        "$dlg.ShowNewFolderButton = $true",
+        "$result = $dlg.ShowDialog()",
+        "if ($result -eq [System.Windows.Forms.DialogResult]::OK) {",
+        "  [Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+        "  Write-Output $dlg.SelectedPath",
+        "}",
+    ].join("; ");
+    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-STA", "-Command", script], { timeout: 120000, maxBuffer: 1024 * 1024 });
+    const picked = String(stdout || "").trim();
+    return picked || null;
+}
+async function checkDirectoryHealth(rawPath) {
+    const resolvedPath = path.resolve(rawPath);
+    let exists = false;
+    let isDirectory = false;
+    let readable = false;
+    let writable = false;
+    try {
+        const st = await fs.stat(resolvedPath);
+        exists = true;
+        isDirectory = st.isDirectory();
+    }
+    catch {
+        return { resolvedPath, exists, isDirectory, readable, writable };
+    }
+    if (!isDirectory)
+        return { resolvedPath, exists, isDirectory, readable, writable };
+    try {
+        await fs.access(resolvedPath, fs.constants.R_OK);
+        readable = true;
+    }
+    catch { }
+    try {
+        await fs.access(resolvedPath, fs.constants.W_OK);
+        writable = true;
+    }
+    catch { }
+    return { resolvedPath, exists, isDirectory, readable, writable };
+}
 async function listTree(rel, depth = 0) {
     const startedAt = depth === 0 ? process.hrtime.bigint() : 0n;
     if (depth > MAX_TREE_DEPTH)
@@ -380,6 +443,11 @@ function createExecuteTool(res) {
             return err;
         }
         try {
+            res.write("event: tool_call\n");
+            res.write(`data: ${JSON.stringify({ tool: toolName, args })}\n\n`);
+        }
+        catch { }
+        try {
             if (toolName === "repo_browser.print_tree") {
                 const toolPath = normalizeToolRelPath(args.path);
                 const tree = await listTree(toolPath);
@@ -464,11 +532,17 @@ function createExecuteTool(res) {
             return errUnknown;
         }
         finally {
+            const elapsed = elapsedMs(startedAt);
             perfLog("tool.call", {
                 tool: toolName,
                 status,
-                elapsedMs: elapsedMs(startedAt),
+                elapsedMs: elapsed,
             });
+            try {
+                res.write("event: tool_done\n");
+                res.write(`data: ${JSON.stringify({ tool: toolName, status, elapsedMs: elapsed })}\n\n`);
+            }
+            catch { }
         }
     };
 }
@@ -546,7 +620,8 @@ async function runChatWithTools(ctx, messages, depth = 0) {
                     model: effectiveModel,
                     stream: true,
                     messages,
-                    temperature: payload.temperature ?? 0.2,
+                    temperature: payload.temperature ?? getActiveProject().temperature ?? 0.2,
+                    max_tokens: payload.max_tokens ?? getActiveProject().maxTokens ?? 4096,
                     ...toolsPayload,
                 }),
                 // @ts-ignore
@@ -819,6 +894,10 @@ const server = createServer(async (req, res) => {
     // Let MCP handler own these endpoints
     if (pathname === "/mcp/apply_patch" || pathname === "/mcp/rewrite_file")
         return;
+    const publicPaths = new Set(["/", "/index.html", "/healthz"]);
+    if (!publicPaths.has(pathname) && !isAuthorized(req)) {
+        return json(res, { ok: false, error: "Unauthorized" }, 401);
+    }
     // ---- STATE API ----
     if (pathname === "/state" && req.method === "GET") {
         await syncActiveProjectIntoRuntime();
@@ -835,7 +914,10 @@ const server = createServer(async (req, res) => {
                 rootDir: patch.rootDir,
                 apiBase: patch.apiBase ? normalizeApiBase(String(patch.apiBase)) : undefined,
                 model: patch.model,
+                pinned: patch.pinned,
                 mcpEnabled: patch.mcpEnabled,
+                temperature: patch.temperature,
+                maxTokens: patch.maxTokens,
             }, projectSettingsFallback());
             await syncActiveProjectIntoRuntime();
             return json(res, dashboardState);
@@ -856,7 +938,10 @@ const server = createServer(async (req, res) => {
                 rootDir: body?.rootDir,
                 apiBase: body?.apiBase ? normalizeApiBase(String(body.apiBase)) : undefined,
                 model: body?.model,
+                pinned: body?.pinned,
                 mcpEnabled: body?.mcpEnabled,
+                temperature: body?.temperature,
+                maxTokens: body?.maxTokens,
             }, projectSettingsFallback());
             await syncActiveProjectIntoRuntime();
             return json(res, { ok: true, state: created });
@@ -890,7 +975,10 @@ const server = createServer(async (req, res) => {
                     rootDir: body?.rootDir,
                     apiBase: body?.apiBase ? normalizeApiBase(String(body.apiBase)) : undefined,
                     model: body?.model,
+                    pinned: body?.pinned,
                     mcpEnabled: body?.mcpEnabled,
+                    temperature: body?.temperature,
+                    maxTokens: body?.maxTokens,
                 }, projectSettingsFallback());
                 if (getUIState().activeProjectId === projectId)
                     await syncActiveProjectIntoRuntime();
@@ -916,7 +1004,8 @@ const server = createServer(async (req, res) => {
         const projectId = decodeURIComponent(projectChatsMatch[1]);
         if (req.method === "GET") {
             try {
-                return json(res, await listChats(projectId));
+                const includeArchived = urlObj.searchParams.get("includeArchived") === "true";
+                return json(res, await listChats(projectId, { includeArchived }));
             }
             catch (e) {
                 return json(res, { ok: false, error: e?.message || String(e) }, 400);
@@ -931,6 +1020,54 @@ const server = createServer(async (req, res) => {
             catch (e) {
                 return json(res, { ok: false, error: e?.message || String(e) }, 400);
             }
+        }
+    }
+    const projectDuplicateMatch = pathname.match(/^\/projects\/([^/]+)\/duplicate$/);
+    if (projectDuplicateMatch && req.method === "POST") {
+        try {
+            const projectId = decodeURIComponent(projectDuplicateMatch[1]);
+            const next = await duplicateProject(projectId, projectSettingsFallback());
+            await syncActiveProjectIntoRuntime();
+            return json(res, { ok: true, state: next });
+        }
+        catch (e) {
+            return json(res, { ok: false, error: e?.message || String(e) }, 400);
+        }
+    }
+    const projectExportMatch = pathname.match(/^\/projects\/([^/]+)\/export$/);
+    if (projectExportMatch && req.method === "GET") {
+        try {
+            const projectId = decodeURIComponent(projectExportMatch[1]);
+            return json(res, { ok: true, config: exportProjectConfig(projectId) });
+        }
+        catch (e) {
+            return json(res, { ok: false, error: e?.message || String(e) }, 400);
+        }
+    }
+    if (pathname === "/projects/import" && req.method === "POST") {
+        try {
+            const body = await readJsonBody(req);
+            const next = await importProjectConfig(body?.config || body, projectSettingsFallback());
+            await syncActiveProjectIntoRuntime();
+            return json(res, { ok: true, state: next });
+        }
+        catch (e) {
+            return json(res, { ok: false, error: e?.message || String(e) }, 400);
+        }
+    }
+    const projectBulkDeleteChatsMatch = pathname.match(/^\/projects\/([^/]+)\/chats\/bulk-delete$/);
+    if (projectBulkDeleteChatsMatch && req.method === "POST") {
+        try {
+            const projectId = decodeURIComponent(projectBulkDeleteChatsMatch[1]);
+            const body = await readJsonBody(req);
+            const next = await bulkDeleteChats(projectId, {
+                includePinned: body?.includePinned === true,
+                includeArchived: body?.includeArchived === true,
+            });
+            return json(res, { ok: true, state: next });
+        }
+        catch (e) {
+            return json(res, { ok: false, error: e?.message || String(e) }, 400);
         }
     }
     // ---- Chats ----
@@ -965,6 +1102,7 @@ const server = createServer(async (req, res) => {
                 const next = await updateChat(chatId, {
                     title: body?.title,
                     pinned: body?.pinned,
+                    archived: body?.archived,
                     messages: body?.messages,
                 });
                 return json(res, { ok: true, state: next });
@@ -996,6 +1134,17 @@ const server = createServer(async (req, res) => {
                 ...message,
                 role,
             });
+            return json(res, { ok: true, state: next });
+        }
+        catch (e) {
+            return json(res, { ok: false, error: e?.message || String(e) }, 400);
+        }
+    }
+    const chatArchiveMatch = pathname.match(/^\/chats\/([^/]+)\/archive$/);
+    if (chatArchiveMatch && req.method === "POST") {
+        try {
+            const chatId = decodeURIComponent(chatArchiveMatch[1]);
+            const next = await archiveChat(chatId);
             return json(res, { ok: true, state: next });
         }
         catch (e) {
@@ -1044,6 +1193,97 @@ const server = createServer(async (req, res) => {
         }
         catch (e) {
             return json(res, { ok: false, error: e?.message || String(e) }, 400);
+        }
+    }
+    if (pathname === "/fs/pick-directory" && req.method === "POST") {
+        try {
+            const picked = await pickDirectoryNative();
+            if (!picked)
+                return json(res, { ok: false, canceled: true });
+            return json(res, { ok: true, path: picked });
+        }
+        catch (e) {
+            return json(res, { ok: false, error: e?.message || String(e) }, 500);
+        }
+    }
+    if (pathname === "/fs/validate-directory" && req.method === "POST") {
+        try {
+            const body = await readJsonBody(req);
+            const raw = String(body?.path || "").trim();
+            if (!raw)
+                return json(res, { ok: false, error: "Missing path" }, 400);
+            const health = await checkDirectoryHealth(raw);
+            return json(res, {
+                ok: true,
+                input: raw,
+                resolvedPath: health.resolvedPath,
+                exists: health.exists,
+                isDirectory: health.isDirectory,
+                readable: health.readable,
+                writable: health.writable,
+            });
+        }
+        catch (e) {
+            return json(res, { ok: false, error: e?.message || String(e) }, 500);
+        }
+    }
+    if (pathname === "/fs/recent-roots" && req.method === "GET") {
+        try {
+            const projects = (await listProjects()).projects || [];
+            const candidates = Array.from(new Set([getWorkspaceRoot(), process.cwd(), ...projects.map((p) => p.rootDir || "")]
+                .map((p) => String(p || "").trim())
+                .filter(Boolean))).slice(0, 30);
+            const checked = await Promise.all(candidates.map(async (root) => ({ root, ...(await checkDirectoryHealth(root)) })));
+            return json(res, { ok: true, roots: checked });
+        }
+        catch (e) {
+            return json(res, { ok: false, error: e?.message || String(e) }, 500);
+        }
+    }
+    if (pathname === "/fs/dry-run-root" && req.method === "POST") {
+        try {
+            const body = await readJsonBody(req);
+            const raw = String(body?.path || "").trim();
+            if (!raw)
+                return json(res, { ok: false, error: "Missing path" }, 400);
+            const health = await checkDirectoryHealth(raw);
+            if (!(health.exists && health.isDirectory && health.readable)) {
+                return json(res, { ok: false, health, error: "Path is not a readable directory" }, 400);
+            }
+            const sample = await fs.readdir(health.resolvedPath, { withFileTypes: true });
+            const preview = sample.slice(0, 30).map((e) => ({ name: e.name, type: e.isDirectory() ? "dir" : "file" }));
+            return json(res, { ok: true, health, preview });
+        }
+        catch (e) {
+            return json(res, { ok: false, error: e?.message || String(e) }, 500);
+        }
+    }
+    if (pathname === "/state/backup" && req.method === "POST") {
+        try {
+            const body = await readJsonBody(req);
+            const backup = await backupUIState(typeof body?.path === "string" ? body.path : undefined);
+            return json(res, { ok: true, backup });
+        }
+        catch (e) {
+            return json(res, { ok: false, error: e?.message || String(e) }, 500);
+        }
+    }
+    if (pathname === "/state/restore" && req.method === "POST") {
+        try {
+            const body = await readJsonBody(req);
+            let payload = body?.state || body?.payload;
+            if (!payload && typeof body?.path === "string" && body.path.trim()) {
+                const raw = await fs.readFile(path.resolve(body.path.trim()), "utf8");
+                payload = JSON.parse(raw);
+            }
+            if (!payload)
+                throw new Error("Missing restore payload");
+            const next = await restoreUIState(payload, projectSettingsFallback());
+            await syncActiveProjectIntoRuntime();
+            return json(res, { ok: true, state: next });
+        }
+        catch (e) {
+            return json(res, { ok: false, error: e?.message || String(e) }, 500);
         }
     }
     // ---- Serve dashboard HTML ----

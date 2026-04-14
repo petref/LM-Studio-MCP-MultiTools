@@ -12,7 +12,8 @@
     "chat": "tsx src/chat/chat.ts",
     "dev:chat": "tsx watch src/chat/chat.ts",
     "dev": "tsx watch src/mcp/standalone.ts",
-    "dashboard": "set HOST=0.0.0.0 && tsx src/control/server.ts"
+    "dashboard": "set HOST=0.0.0.0 && tsx src/control/server.ts",
+    "test:e2e:smoke": "node scripts/e2e-smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.21.0",

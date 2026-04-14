@@ -131,8 +131,9 @@ async function applyParsedPatch(getRoot, parsed) {
         throw new Error(`File not found for update: ${parsed.path}`);
     }
     let lines = original.replace(/\r\n/g, "\n").split("\n");
+    let lineOffset = 0;
     for (const h of parsed.hunks) {
-        const start = h.oldRange.start - 1;
+        const start = h.oldRange.start - 1 + lineOffset;
         if (start < 0 || start > lines.length) {
             throw new Error(`Invalid hunk start ${h.oldRange.start} for file "${parsed.path}"`);
         }
@@ -151,6 +152,7 @@ async function applyParsedPatch(getRoot, parsed) {
             throw new Error(`Patch hunk context mismatch for "${parsed.path}" at line ${h.oldRange.start}`);
         }
         lines.splice(start, h.oldRange.count, ...replace);
+        lineOffset += replace.length - h.oldRange.count;
     }
     const finalText = lines.join("\n") + "\n";
     await fs.writeFile(abs, finalText, "utf8");

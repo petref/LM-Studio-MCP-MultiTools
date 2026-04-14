@@ -9,6 +9,7 @@ export type ProjectSettings = {
   mcpEnabled: boolean;
   temperature: number;
   maxTokens: number;
+  trustedRoots: string[];
 };
 
 export type ProjectRecord = ProjectSettings & {
@@ -80,18 +81,30 @@ function asBool(v: unknown, fallback = false): boolean {
   return typeof v === "boolean" ? v : fallback;
 }
 
+function asStringArray(v: unknown, fallback: string[] = []): string[] {
+  if (!Array.isArray(v)) return fallback;
+  const out = v
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
+  return Array.from(new Set(out));
+}
+
 function sanitizeProjectSettings(settings: Partial<ProjectSettings>, fallback: ProjectSettings): ProjectSettings {
   const tempRaw = Number((settings as any).temperature);
   const maxRaw = Number((settings as any).maxTokens);
   const temperature = Number.isFinite(tempRaw) ? Math.max(0, Math.min(2, tempRaw)) : fallback.temperature;
   const maxTokens = Number.isFinite(maxRaw) ? Math.max(128, Math.min(128000, Math.round(maxRaw))) : fallback.maxTokens;
+  const rootDir = asString(settings.rootDir, fallback.rootDir);
+  const trustedRoots = asStringArray((settings as any).trustedRoots, fallback.trustedRoots || []);
+  if (!trustedRoots.includes(rootDir)) trustedRoots.unshift(rootDir);
   return {
-    rootDir: asString(settings.rootDir, fallback.rootDir),
+    rootDir,
     apiBase: asString(settings.apiBase, fallback.apiBase),
     model: asString(settings.model, fallback.model || ""),
     mcpEnabled: asBool(settings.mcpEnabled, fallback.mcpEnabled),
     temperature,
     maxTokens,
+    trustedRoots,
   };
 }
 
@@ -122,7 +135,7 @@ function defaultState(defaultSettings: ProjectSettings): UIState {
   };
   const chat = defaultChat(projectId);
   return {
-    version: 2,
+    version: 3,
     activeProjectId: projectId,
     activeChatId: chat.id,
     projects: [project],
@@ -186,7 +199,7 @@ function normalizeState(raw: unknown, fallbackSettings: ProjectSettings): UIStat
       : activeChatCandidates[0]?.id || chats[0]?.id || null;
 
   return {
-    version: 2,
+    version: 3,
     activeProjectId,
     activeChatId,
     projects,
@@ -279,13 +292,16 @@ export async function updateProject(projectId: string, patch: Partial<ProjectRec
   return updateState((st) => {
     const p = st.projects.find((x) => x.id === projectId);
     if (!p) throw new Error("Project not found");
-    const nextSettings = sanitizeProjectSettings(patch, fallback);
+    const nextSettings = sanitizeProjectSettings(patch, p);
     p.name = asString(patch.name, p.name);
     if (typeof (patch as any).pinned === "boolean") p.pinned = (patch as any).pinned;
     p.rootDir = nextSettings.rootDir;
     p.apiBase = nextSettings.apiBase;
     p.model = nextSettings.model;
     p.mcpEnabled = nextSettings.mcpEnabled;
+    p.temperature = nextSettings.temperature;
+    p.maxTokens = nextSettings.maxTokens;
+    p.trustedRoots = nextSettings.trustedRoots;
     p.updatedAt = now();
   });
 }
@@ -504,6 +520,7 @@ export function exportProjectConfig(projectId: string) {
       mcpEnabled: p.mcpEnabled,
       temperature: p.temperature,
       maxTokens: p.maxTokens,
+      trustedRoots: p.trustedRoots,
     },
   };
 }
@@ -521,6 +538,7 @@ export async function importProjectConfig(input: any, fallback: ProjectSettings)
       mcpEnabled: asBool(raw.mcpEnabled, fallback.mcpEnabled),
       temperature: Number(raw.temperature),
       maxTokens: Number(raw.maxTokens),
+      trustedRoots: asStringArray(raw.trustedRoots, fallback.trustedRoots),
     } as any,
     fallback
   );

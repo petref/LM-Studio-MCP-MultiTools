@@ -154,6 +154,15 @@
       font-size: 13px;
     }
 
+    #sidebarToggleTitle {
+      max-width: 420px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      display: inline-block;
+      vertical-align: bottom;
+    }
+
     .messages-wrapper {
       flex: 1;
       min-height: 0;
@@ -263,6 +272,21 @@
       color: #f5f5f5;
       resize: vertical;
       word-break: break-word;
+    }
+
+    .composer-main {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .token-stats {
+      font-size: 11px;
+      color: #98a6bd;
+      text-align: right;
+      min-height: 14px;
     }
 
     button {
@@ -412,6 +436,20 @@
       max-height: 190px;
       overflow: auto;
       background: transparent;
+      position: relative;
+    }
+
+    .virtual-spacer {
+      width: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .virtual-window {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
     }
 
     .list-item {
@@ -440,8 +478,9 @@
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 6px;
-      margin-bottom: 6px;
       align-items: center;
+      margin-bottom: 0;
+      padding: 2px 0;
     }
 
     .list-item-row .list-item {
@@ -472,7 +511,7 @@
       border: 1px solid rgba(255, 255, 255, 0.14);
       background: rgba(10, 12, 18, 0.98);
       box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
-      z-index: 60;
+      z-index: 1000;
     }
 
     .item-menu.open {
@@ -550,6 +589,27 @@
       justify-content: flex-end;
       gap: 8px;
       margin-top: 12px;
+    }
+
+    .undo-snackbar {
+      position: fixed;
+      left: 50%;
+      bottom: 14px;
+      transform: translateX(-50%);
+      z-index: 120;
+      background: rgba(20, 20, 20, 0.96);
+      border: 1px solid #2f2f2f;
+      border-radius: 10px;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+      display: none;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 12px;
+      font-size: 13px;
+    }
+
+    .undo-snackbar.open {
+      display: flex;
     }
 
     .danger {
@@ -733,6 +793,16 @@
       flex-shrink: 0;
     }
 
+    .exchange-token-live {
+      font-size: 11px;
+      color: #9ec2ff;
+      border: 1px solid rgba(80, 150, 255, 0.35);
+      background: rgba(18, 38, 70, 0.4);
+      border-radius: 999px;
+      padding: 2px 8px;
+      white-space: nowrap;
+    }
+
     .exchange-toggle {
       border: none;
       background: transparent;
@@ -777,6 +847,14 @@
       border-top: 1px solid #222;
       display: none;
       /* collapsed by default */
+    }
+
+    .exchange-token-total {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px dashed rgba(255, 255, 255, 0.14);
+      font-size: 12px;
+      color: #b6c4d8;
     }
 
     /* Stop button in exchange header */
@@ -943,6 +1021,7 @@
           <div class="list-actions">
             <button id="applyProjectRoot" type="button">Apply Root</button>
             <button id="dryRunRoot" type="button">Dry-run Root</button>
+            <button id="trustRoot" type="button">Trust Root</button>
           </div>
           <div id="projectRootStatus" style="font-size: 12px; color: #aaa"></div>
           <div id="projectRootHealth" style="font-size: 11px; color: #9ec2ff"></div>
@@ -1038,14 +1117,18 @@
     <div class="main">
       <div class="topbar">
         <button id="sidebarToggle" class="sidebar-toggle">
-          ☰ <span>Sidebar</span>
+          <span id="sidebarToggleIcon">☰ ←</span>
+          <span id="sidebarToggleTitle">No project / No chat</span>
         </button>
       </div>
 
       <div class="messages-wrapper">
         <div id="messages" class="messages"></div>
         <div class="composer">
-          <textarea id="prompt" placeholder="Type your message..."></textarea>
+          <div class="composer-main">
+            <textarea id="prompt" placeholder="Type your message..."></textarea>
+            <div id="tokenStats" class="token-stats">Input: 0 tokens</div>
+          </div>
           <div class="composer-side">
             <div class="add-menu-wrap">
               <button id="addMenuBtn" class="add-btn" type="button">+</button>
@@ -1075,6 +1158,10 @@
       </div>
     </div>
   </div>
+  <div id="undoSnackbar" class="undo-snackbar" role="status" aria-live="polite">
+    <span id="undoText">Action completed.</span>
+    <button id="undoButton" type="button">Undo</button>
+  </div>
 
   <script>
     const ui = {
@@ -1087,6 +1174,7 @@
       projectRootStatus: document.getElementById("projectRootStatus"),
       projectRootHealth: document.getElementById("projectRootHealth"),
       dryRunRoot: document.getElementById("dryRunRoot"),
+      trustRoot: document.getElementById("trustRoot"),
       mcpEnabled: document.getElementById("mcpEnabled"),
       temperatureInput: document.getElementById("temperatureInput"),
       maxTokensInput: document.getElementById("maxTokensInput"),
@@ -1133,9 +1221,12 @@
       toolLog: document.getElementById("toolLog"),
       messages: document.getElementById("messages"),
       prompt: document.getElementById("prompt"),
+      tokenStats: document.getElementById("tokenStats"),
       regenerate: document.getElementById("regenerate"),
       send: document.getElementById("send"),
       sidebarToggle: document.getElementById("sidebarToggle"),
+      sidebarToggleIcon: document.getElementById("sidebarToggleIcon"),
+      sidebarToggleTitle: document.getElementById("sidebarToggleTitle"),
       appShell: document.getElementById("appShell"),
       imageInput: document.getElementById("imageInput"),
       addMenuBtn: document.getElementById("addMenuBtn"),
@@ -1149,6 +1240,9 @@
       modalFields: document.getElementById("modalFields"),
       modalCancel: document.getElementById("modalCancel"),
       modalConfirm: document.getElementById("modalConfirm"),
+      undoSnackbar: document.getElementById("undoSnackbar"),
+      undoText: document.getElementById("undoText"),
+      undoButton: document.getElementById("undoButton"),
     };
 
     const state = {
@@ -1166,16 +1260,28 @@
       compactMode: localStorage.getItem("compactMode") === "true",
       authToken: localStorage.getItem("dashboardAuthToken") || "",
       toolEvents: [],
+      streamOutTokens: 0,
+      streamActive: false,
     };
     const pendingAttachment = { dataUrl: "", name: "" };
     const markdownCache = new Map();
     const MAX_MARKDOWN_CACHE = 200;
     let perfPollingHandle = null;
     let perfUnavailable = false;
+    let undoTimer = null;
+
+    function updateSidebarToggleUI() {
+      const collapsed = ui.appShell?.classList.contains("sidebar-collapsed");
+      const pName = getActiveProjectRecord()?.name || "No project";
+      const cName = getActiveChatRecord()?.title || "No chat";
+      if (ui.sidebarToggleIcon) ui.sidebarToggleIcon.textContent = `☰ ${collapsed ? "→" : "←"}`;
+      if (ui.sidebarToggleTitle) ui.sidebarToggleTitle.textContent = `${pName} / ${cName}`;
+    }
 
     // Sidebar toggle
     ui.sidebarToggle.onclick = () => {
       ui.appShell.classList.toggle("sidebar-collapsed");
+      updateSidebarToggleUI();
     };
 
     function setSidebarTab(tab) {
@@ -1224,7 +1330,7 @@
           const first = lines[0].trim();
           const lang = first && !parts[i].startsWith("\n") ? first : "";
           const code = escapeHTML(lines.slice(lang ? 1 : 0).join("\n"));
-          html += `<pre><code data-lang="${lang}">${code}</code></pre><div style="margin-bottom:6px"><button onclick="copyPrev(this)">Copy</button></div>`;
+          html += `<pre><code data-lang="${escapeAttr(lang)}">${code}</code></pre><div style="margin-bottom:6px"><button onclick="copyPrev(this)">Copy</button></div>`;
         }
       }
       return html;
@@ -1259,6 +1365,62 @@
         /[&<>]/g,
         (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])
       );
+    }
+
+    function escapeAttr(s) {
+      return String(s || "").replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "\"": "&quot;",
+        "'": "&#39;",
+      }[c]));
+    }
+
+    function estimateTokens(text) {
+      const s = String(text || "");
+      if (!s) return 0;
+      return Math.max(1, Math.ceil(s.length / 4));
+    }
+
+    function estimatePromptTokens(text, hasImage) {
+      const base = estimateTokens(text || "");
+      return base + (hasImage ? 85 : 0);
+    }
+
+    function renderTokenStats() {
+      if (!ui.tokenStats) return;
+      const promptTokens = estimateTokens(ui.prompt?.value || "");
+      if (state.streamActive) {
+        const out = Number(state.streamOutTokens || 0);
+        ui.tokenStats.textContent = `Input: ${promptTokens} tokens | Output: ${out} tokens`;
+      } else {
+        ui.tokenStats.textContent = `Input: ${promptTokens} tokens`;
+      }
+    }
+
+    function clearUndoSnackbar() {
+      if (undoTimer) {
+        clearTimeout(undoTimer);
+        undoTimer = null;
+      }
+      if (ui.undoSnackbar) ui.undoSnackbar.classList.remove("open");
+      if (ui.undoButton) ui.undoButton.onclick = null;
+    }
+
+    function showUndoSnackbar({ text, onUndo, timeoutMs = 6000 }) {
+      clearUndoSnackbar();
+      if (!ui.undoSnackbar || !ui.undoText || !ui.undoButton) return;
+      ui.undoText.textContent = text || "Action completed.";
+      ui.undoButton.onclick = async () => {
+        try {
+          await onUndo?.();
+        } finally {
+          clearUndoSnackbar();
+        }
+      };
+      ui.undoSnackbar.classList.add("open");
+      undoTimer = setTimeout(() => clearUndoSnackbar(), timeoutMs);
     }
 
     function renderTextWithMatch(text, query) {
@@ -1372,7 +1534,12 @@
 
         const onKey = (e) => {
           if (e.key === "Escape") close(null);
-          if (e.key === "Enter" && (e.ctrlKey || e.metaKey || fields.length <= 1)) {
+          const activeTag = document.activeElement?.tagName?.toLowerCase();
+          const inTextarea = activeTag === "textarea";
+          const shouldSubmit =
+            e.key === "Enter" &&
+            (e.ctrlKey || e.metaKey || (!inTextarea && !e.shiftKey && fields.length <= 1));
+          if (shouldSubmit) {
             e.preventDefault();
             ui.modalConfirm.click();
           }
@@ -1517,11 +1684,30 @@
     }
 
     function closeItemMenus() {
-      document.querySelectorAll(".item-menu.open").forEach((el) => el.classList.remove("open"));
+      document.querySelectorAll(".item-menu.open").forEach((el) => {
+        el.classList.remove("open");
+        if (el.__menuOriginParent && el.parentElement === document.body) {
+          try {
+            const origin = el.__menuOriginParent;
+            const next = el.__menuOriginNext;
+            if (origin && origin.isConnected) {
+              if (next && next.isConnected && next.parentElement === origin) origin.insertBefore(el, next);
+              else origin.appendChild(el);
+            }
+          } catch { }
+        }
+        el.__menuOriginParent = null;
+        el.__menuOriginNext = null;
+      });
     }
 
     function openItemMenu(menuEl, triggerEl) {
       if (!menuEl || !triggerEl) return;
+      if (menuEl.parentElement !== document.body) {
+        menuEl.__menuOriginParent = menuEl.parentElement;
+        menuEl.__menuOriginNext = menuEl.nextSibling || null;
+        document.body.appendChild(menuEl);
+      }
       const r = triggerEl.getBoundingClientRect();
 
       menuEl.style.left = "0px";
@@ -1545,8 +1731,50 @@
       menuEl.style.top = `${Math.round(top)}px`;
     }
 
+    function renderVirtualList(container, items, opts) {
+      if (!container) return;
+      const rowHeight = Math.max(28, Number(opts?.rowHeight || 48));
+      const overscan = Math.max(3, Number(opts?.overscan || 8));
+      const renderRow = opts?.renderRow;
+      const emptyText = opts?.emptyText || "No items.";
+
+      container.innerHTML = "";
+      if (!items.length) {
+        container.textContent = emptyText;
+        return;
+      }
+
+      const viewportHeight = Math.max(120, container.clientHeight || 190);
+      const totalHeight = items.length * rowHeight;
+      const spacer = document.createElement("div");
+      spacer.className = "virtual-spacer";
+      spacer.style.height = `${totalHeight}px`;
+
+      const windowEl = document.createElement("div");
+      windowEl.className = "virtual-window";
+      container.appendChild(spacer);
+      container.appendChild(windowEl);
+
+      const paint = () => {
+        const scrollTop = container.scrollTop || 0;
+        const start = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
+        const visible = Math.ceil(viewportHeight / rowHeight) + overscan * 2;
+        const end = Math.min(items.length, start + visible);
+        windowEl.style.transform = `translateY(${start * rowHeight}px)`;
+        windowEl.innerHTML = "";
+        for (let i = start; i < end; i++) {
+          const row = renderRow(items[i], i);
+          if (!row) continue;
+          row.style.height = `${rowHeight}px`;
+          windowEl.appendChild(row);
+        }
+      };
+
+      container.onscroll = paint;
+      paint();
+    }
+
     function renderProjectList() {
-      ui.projectList.innerHTML = "";
       const q = (state.projectFilter || "").trim();
       let rows = [...state.projects];
       if (state.projectFilterMode === "pinned") rows = rows.filter((p) => !!p.pinned);
@@ -1559,10 +1787,10 @@
         .filter((x) => (q ? x.score > 0 : true))
         .sort((a, b) => b.score - a.score)
         .map((x) => x.p);
-      const totalRows = rows.length;
-      rows = rows.slice(0, 250);
-
-      for (const p of rows) {
+      renderVirtualList(ui.projectList, rows, {
+        rowHeight: 44,
+        emptyText: "No projects.",
+        renderRow: (p) => {
         const row = document.createElement("div");
         row.className = "list-item-row";
 
@@ -1571,8 +1799,12 @@
         btn.type = "button";
         btn.innerHTML = renderTextWithMatch(`${p.pinned ? "[PIN] " : ""}${p.name || "Project"}`, q);
         btn.onclick = async () => {
-          await api.setActiveProject(p.id);
-          await loadState();
+          try {
+            ensureApiOk(await api.setActiveProject(p.id), "Failed to activate project");
+            await loadState();
+          } catch (err) {
+            await showActionError("Project", err);
+          }
         };
 
         const actions = document.createElement("div");
@@ -1592,9 +1824,13 @@
         pinBtn.textContent = p.pinned ? "Unpin" : "Pin";
         pinBtn.onclick = async (e) => {
           e.stopPropagation();
-          await api.updateProject(p.id, { pinned: !p.pinned });
-          closeItemMenus();
-          await loadState();
+          try {
+            ensureApiOk(await api.updateProject(p.id, { pinned: !p.pinned }), "Failed to update project pin");
+            closeItemMenus();
+            await loadState();
+          } catch (err) {
+            await showActionError("Project Pin", err);
+          }
         };
 
         const duplicateBtn = document.createElement("button");
@@ -1602,9 +1838,13 @@
         duplicateBtn.textContent = "Duplicate";
         duplicateBtn.onclick = async (e) => {
           e.stopPropagation();
-          closeItemMenus();
-          await api.duplicateProject(p.id);
-          await loadState();
+          try {
+            closeItemMenus();
+            ensureApiOk(await api.duplicateProject(p.id), "Failed to duplicate project");
+            await loadState();
+          } catch (err) {
+            await showActionError("Duplicate Project", err);
+          }
         };
 
         const exportBtn = document.createElement("button");
@@ -1612,16 +1852,20 @@
         exportBtn.textContent = "Export";
         exportBtn.onclick = async (e) => {
           e.stopPropagation();
-          const out = await api.exportProject(p.id);
-          closeItemMenus();
-          if (!out?.ok || !out?.config) return;
-          const blob = new Blob([JSON.stringify(out.config, null, 2)], { type: "application/json" });
-          const href = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = href;
-          a.download = `${(p.name || "project").replace(/[^a-z0-9-_]+/gi, "_")}.project.json`;
-          a.click();
-          URL.revokeObjectURL(href);
+          try {
+            const out = ensureApiOk(await api.exportProject(p.id), "Failed to export project");
+            closeItemMenus();
+            if (!out?.config) throw new Error("Missing export config");
+            const blob = new Blob([JSON.stringify(out.config, null, 2)], { type: "application/json" });
+            const href = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = href;
+            a.download = `${(p.name || "project").replace(/[^a-z0-9-_]+/gi, "_")}.project.json`;
+            a.click();
+            URL.revokeObjectURL(href);
+          } catch (err) {
+            await showActionError("Export Project", err);
+          }
         };
 
         const renameBtn = document.createElement("button");
@@ -1636,9 +1880,13 @@
           });
           const name = m?.values?.name?.trim();
           if (!name || name === p.name) return;
-          closeItemMenus();
-          await api.updateProject(p.id, { name });
-          await loadState();
+          try {
+            closeItemMenus();
+            ensureApiOk(await api.updateProject(p.id, { name }), "Failed to rename project");
+            await loadState();
+          } catch (err) {
+            await showActionError("Rename Project", err);
+          }
         };
 
         const deleteBtn = document.createElement("button");
@@ -1654,11 +1902,20 @@
             confirmText: "Delete",
             danger: true,
           });
-          if ((m?.values?.confirm || "").trim().toUpperCase() !== "DELETE") return;
-          closeItemMenus();
-          const r = await api.deleteProject(p.id);
-          if (r?.ok === false && r?.error) alert(r.error);
-          await loadState();
+          if ((m?.values?.confirm || "").trim().toUpperCase() !== "DELETE") {
+            await showActionError("Delete Project", "Confirmation text mismatch. Type DELETE.");
+            return;
+          }
+          try {
+            closeItemMenus();
+            ensureApiOk(
+              await withUndoSnapshot(`Deleted project "${p.name}"`, () => api.deleteProject(p.id)),
+              "Failed to delete project"
+            );
+            await loadState();
+          } catch (err) {
+            await showActionError("Delete Project", err);
+          }
         };
 
         menuBtn.onclick = (e) => {
@@ -1677,21 +1934,13 @@
         actions.appendChild(menu);
         row.appendChild(btn);
         row.appendChild(actions);
-        ui.projectList.appendChild(row);
-      }
-      if (!rows.length) ui.projectList.textContent = "No projects.";
-      if (totalRows > rows.length) {
-        const note = document.createElement("div");
-        note.style.fontSize = "11px";
-        note.style.color = "#9aa3b2";
-        note.textContent = `Showing first ${rows.length} of ${totalRows} projects (refine search).`;
-        ui.projectList.appendChild(note);
-      }
+          return row;
+        },
+      });
       refreshActionButtons();
     }
 
     function renderChatList() {
-      ui.chatList.innerHTML = "";
       const q = (state.chatFilter || "").trim();
       let rows = [...state.chats];
       if (state.chatFilterMode === "pinned") rows = rows.filter((c) => !!c.pinned && !c.archived);
@@ -1707,10 +1956,10 @@
         .filter((x) => (q ? x.score > 0 : true))
         .sort((a, b) => b.score - a.score)
         .map((x) => x.c);
-      const totalRows = rows.length;
-      rows = rows.slice(0, 300);
-
-      for (const c of rows) {
+      renderVirtualList(ui.chatList, rows, {
+        rowHeight: 44,
+        emptyText: "No chats.",
+        renderRow: (c) => {
         const row = document.createElement("div");
         row.className = "list-item-row";
 
@@ -1719,10 +1968,15 @@
         btn.type = "button";
         btn.innerHTML = renderTextWithMatch(`${c.pinned ? "[PIN] " : ""}${c.title || "Chat"}`, q);
         btn.onclick = async () => {
-          await api.setActiveChat(c.id);
-          state.activeChatId = c.id;
-          await loadActiveChatMessages();
-          renderChatList();
+          try {
+            ensureApiOk(await api.setActiveChat(c.id), "Failed to activate chat");
+            state.activeChatId = c.id;
+            updateSidebarToggleUI();
+            await loadActiveChatMessages();
+            renderChatList();
+          } catch (err) {
+            await showActionError("Chat", err);
+          }
         };
 
         const actions = document.createElement("div");
@@ -1742,9 +1996,13 @@
         pinBtn.textContent = c.pinned ? "Unpin" : "Pin";
         pinBtn.onclick = async (e) => {
           e.stopPropagation();
-          await api.updateChat(c.id, { pinned: !c.pinned });
-          closeItemMenus();
-          await loadState();
+          try {
+            ensureApiOk(await api.updateChat(c.id, { pinned: !c.pinned }), "Failed to update chat pin");
+            closeItemMenus();
+            await loadState();
+          } catch (err) {
+            await showActionError("Chat Pin", err);
+          }
         };
 
         const renameBtn = document.createElement("button");
@@ -1759,9 +2017,13 @@
           });
           const title = m?.values?.title?.trim();
           if (!title || title === c.title) return;
-          closeItemMenus();
-          await api.updateChat(c.id, { title });
-          await loadState();
+          try {
+            closeItemMenus();
+            ensureApiOk(await api.updateChat(c.id, { title }), "Failed to rename chat");
+            await loadState();
+          } catch (err) {
+            await showActionError("Rename Chat", err);
+          }
         };
 
         const archiveBtn = document.createElement("button");
@@ -1769,9 +2031,16 @@
         archiveBtn.textContent = "Archive";
         archiveBtn.onclick = async (e) => {
           e.stopPropagation();
-          closeItemMenus();
-          await api.archiveChat(c.id);
-          await loadState();
+          try {
+            closeItemMenus();
+            ensureApiOk(
+              await withUndoSnapshot(`Archived chat "${c.title || "Chat"}"`, () => api.archiveChat(c.id)),
+              "Failed to archive chat"
+            );
+            await loadState();
+          } catch (err) {
+            await showActionError("Archive Chat", err);
+          }
         };
 
         const deleteBtn = document.createElement("button");
@@ -1786,10 +2055,20 @@
             confirmText: "Delete",
             danger: true,
           });
-          if ((m?.values?.confirm || "").trim().toUpperCase() !== "DELETE") return;
-          closeItemMenus();
-          await api.deleteChat(c.id);
-          await loadState();
+          if ((m?.values?.confirm || "").trim().toUpperCase() !== "DELETE") {
+            await showActionError("Delete Chat", "Confirmation text mismatch. Type DELETE.");
+            return;
+          }
+          try {
+            closeItemMenus();
+            ensureApiOk(
+              await withUndoSnapshot(`Deleted chat "${c.title || "Chat"}"`, () => api.deleteChat(c.id)),
+              "Failed to delete chat"
+            );
+            await loadState();
+          } catch (err) {
+            await showActionError("Delete Chat", err);
+          }
         };
 
         menuBtn.onclick = (e) => {
@@ -1807,16 +2086,9 @@
         actions.appendChild(menu);
         row.appendChild(btn);
         row.appendChild(actions);
-        ui.chatList.appendChild(row);
-      }
-      if (!rows.length) ui.chatList.textContent = "No chats.";
-      if (totalRows > rows.length) {
-        const note = document.createElement("div");
-        note.style.fontSize = "11px";
-        note.style.color = "#9aa3b2";
-        note.textContent = `Showing first ${rows.length} of ${totalRows} chats (refine search).`;
-        ui.chatList.appendChild(note);
-      }
+          return row;
+        },
+      });
       refreshActionButtons();
     }
     async function loadWorkspaceState() {
@@ -1832,6 +2104,7 @@
         renderChatList();
         state.messages = [];
         renderChatHistory();
+        updateSidebarToggleUI();
         return;
       }
 
@@ -1839,6 +2112,7 @@
       state.chats = Array.isArray(c?.chats) ? c.chats : [];
       state.activeChatId = c?.activeChatId || state.chats[0]?.id || null;
       renderChatList();
+      updateSidebarToggleUI();
       await loadActiveChatMessages();
     }
 
@@ -1846,13 +2120,32 @@
       return state.projects.find((p) => p.id === state.activeProjectId) || null;
     }
 
+    function trustedRootsOf(project) {
+      const arr = Array.isArray(project?.trustedRoots) ? project.trustedRoots : [];
+      return Array.from(new Set(arr.map((x) => String(x || "").trim()).filter(Boolean)));
+    }
+
+    function isRootTrusted(project, rootPath) {
+      const root = String(rootPath || "").trim().toLowerCase();
+      if (!root) return false;
+      return trustedRootsOf(project).some((x) => x.toLowerCase() === root);
+    }
+
     function getActiveChatRecord() {
       return state.chats.find((c) => c.id === state.activeChatId) || null;
+    }
+
+    function getEffectiveTemperature() {
+      const p = getActiveProjectRecord();
+      const candidate = Number(p?.temperature ?? ui.temperatureInput?.value ?? 0.2);
+      if (!Number.isFinite(candidate)) return 0.2;
+      return Math.max(0, Math.min(2, candidate));
     }
 
     function refreshActionButtons() {
       const p = getActiveProjectRecord();
       if (ui.applyProjectRoot) ui.applyProjectRoot.disabled = !p;
+      if (ui.trustRoot) ui.trustRoot.disabled = !p;
     }
 
     function syncProjectRootControls() {
@@ -1866,7 +2159,7 @@
       if (ui.pickProjectRoot) ui.pickProjectRoot.disabled = !p;
       if (ui.projectRootStatus) {
         ui.projectRootStatus.textContent = p
-          ? `Active project root: ${p.rootDir || "."}`
+          ? `Active project root: ${p.rootDir || "."} | trusted roots: ${trustedRootsOf(p).length}`
           : "No active project selected.";
       }
       refreshProjectRootHealth();
@@ -1889,7 +2182,10 @@
         const isDir = check.isDirectory ? "yes" : "no";
         const readable = check.readable ? "yes" : "no";
         const writable = check.writable ? "yes" : "no";
-        ui.projectRootHealth.textContent = `Health: exists=${exists}, dir=${isDir}, read=${readable}, write=${writable}, resolved=${check.resolvedPath || pathVal}`;
+        const p = getActiveProjectRecord();
+        const resolved = String(check.resolvedPath || pathVal);
+        const trusted = isRootTrusted(p, resolved) ? "trusted" : "untrusted";
+        ui.projectRootHealth.textContent = `Health: exists=${exists}, dir=${isDir}, read=${readable}, write=${writable}, trust=${trusted}, resolved=${resolved}`;
       } catch (e) {
         ui.projectRootHealth.textContent = `Health check failed: ${String(e?.message || e)}`;
       }
@@ -1971,6 +2267,10 @@
     const api = {
       async getState() {
         const r = await apiFetch("/state");
+        return r.json();
+      },
+      async getUIStateSnapshot() {
+        const r = await apiFetch("/state/ui");
         return r.json();
       },
       async listProjects() {
@@ -2211,6 +2511,7 @@
         const decoder = new TextDecoder();
         let accum = "";
         let buffer = "";
+        let gotDone = false;
 
         const appendNew = (base, next) => {
           if (!next) return base;
@@ -2232,9 +2533,11 @@
             buffer += decoder.decode(value, { stream: true });
 
             let sepIndex;
-            while ((sepIndex = buffer.indexOf("\n\n")) !== -1) {
+            while ((sepIndex = buffer.search(/\r?\n\r?\n/)) !== -1) {
               const rawEvent = buffer.slice(0, sepIndex);
-              buffer = buffer.slice(sepIndex + 2);
+              const delim = buffer.slice(sepIndex).match(/^\r?\n\r?\n/);
+              const delimLen = delim ? delim[0].length : 2;
+              buffer = buffer.slice(sepIndex + delimLen);
 
               const lines = rawEvent
                 .split("\n")
@@ -2298,6 +2601,9 @@
                   payload.message || "Unexpected error from backend.";
                 pushToolEvent("error", msg);
                 yield { type: "error", message: msg };
+              } else if (eventType === "done") {
+                gotDone = true;
+                yield { type: "done", status: payload?.status || "done" };
               }
             }
           }
@@ -2322,9 +2628,47 @@
           };
         } finally {
           reader.releaseLock?.();
+          if (!gotDone) {
+            yield { type: "done", status: "eof" };
+          }
         }
       },
     };
+
+    async function withUndoSnapshot(label, task) {
+      let snap = null;
+      try {
+        const r = await api.getUIStateSnapshot();
+        if (r?.ok && r?.state) snap = r.state;
+      } catch { }
+      const out = await task();
+      if (snap && !(out?.ok === false)) {
+        showUndoSnackbar({
+          text: label,
+          onUndo: async () => {
+            await api.restoreState({ state: snap });
+            await loadState();
+          },
+        });
+      }
+      return out;
+    }
+
+    function ensureApiOk(result, fallbackMessage) {
+      if (result?.ok === false) {
+        throw new Error(result?.error || fallbackMessage || "Operation failed");
+      }
+      return result;
+    }
+
+    async function showActionError(title, err) {
+      await openModal({
+        title,
+        text: String(err?.message || err || "Operation failed"),
+        confirmText: "OK",
+        cancelText: "Close",
+      });
+    }
 
     // --- Load state & models ---------------------------------------------
 
@@ -2465,6 +2809,7 @@
       }
 
       await refreshPerfPanel();
+      renderTokenStats();
     }
 
     ui.saveState.onclick = async () => {
@@ -2509,6 +2854,7 @@
       await api.createProject({
         name,
         rootDir,
+        trustedRoots: [rootDir],
         mcpEnabled: !!ui.mcpEnabled?.checked,
         temperature: Number(ui.temperatureInput?.value || 0.2),
         maxTokens: Number(ui.maxTokensInput?.value || 4096),
@@ -2593,12 +2939,21 @@
         confirmText: "Delete",
         danger: true,
       });
-      if ((m?.values?.confirm || "").trim().toUpperCase() !== "DELETE") return;
-      const r = await api.bulkDeleteChats(state.activeProjectId, { includePinned: false, includeArchived: true });
-      if (r?.ok === false && r?.error) {
-        await openModal({ title: "Bulk Delete", text: r.error, confirmText: "OK", cancelText: "Close" });
+      if ((m?.values?.confirm || "").trim().toUpperCase() !== "DELETE") {
+        await showActionError("Bulk Delete", "Confirmation text mismatch. Type DELETE.");
+        return;
       }
-      await loadState();
+      try {
+        ensureApiOk(
+          await withUndoSnapshot("Bulk deleted chats from active project", () =>
+            api.bulkDeleteChats(state.activeProjectId, { includePinned: false, includeArchived: true })
+          ),
+          "Bulk delete failed"
+        );
+        await loadState();
+      } catch (err) {
+        await showActionError("Bulk Delete", err);
+      }
     });
     ui.perfRefresh.onclick = async () => {
       await refreshPerfPanel();
@@ -2717,13 +3072,48 @@
       const nextRoot = String(check.resolvedPath || nextRootInput);
       if (ui.projectRootDir) ui.projectRootDir.value = nextRoot;
 
-      const r = await api.updateProject(p.id, { rootDir: nextRoot });
+      const trusted = trustedRootsOf(p);
+      let nextTrusted = [...trusted];
+      if (!isRootTrusted(p, nextRoot)) {
+        const m = await openModal({
+          title: "Untrusted Root",
+          text: `The selected root is not in this project's trusted roots list.\n\n${nextRoot}\n\nType TRUST to allow and apply.`,
+          fields: [{ id: "confirm", label: "Confirmation", placeholder: "TRUST" }],
+          confirmText: "Trust & Apply",
+          danger: true,
+        });
+        if ((m?.values?.confirm || "").trim().toUpperCase() !== "TRUST") {
+          if (ui.projectRootStatus) ui.projectRootStatus.textContent = "Root change cancelled (untrusted path).";
+          return;
+        }
+        nextTrusted.push(nextRoot);
+        nextTrusted = Array.from(new Set(nextTrusted.map((x) => String(x || "").trim()).filter(Boolean)));
+      }
+
+      const r = await api.updateProject(p.id, { rootDir: nextRoot, trustedRoots: nextTrusted });
       if (r?.ok === false && r?.error) {
         if (ui.projectRootStatus) ui.projectRootStatus.textContent = `Failed: ${r.error}`;
         return;
       }
 
       if (ui.projectRootStatus) ui.projectRootStatus.textContent = `Saved root for "${p.name}": ${nextRoot}`;
+      await loadState();
+    });
+
+    ui.trustRoot?.addEventListener("click", async () => {
+      const p = getActiveProjectRecord();
+      if (!p) return;
+      const pathVal = String(ui.projectRootDir?.value || "").trim();
+      if (!pathVal) return;
+      const check = await api.validateDirectoryPath(pathVal);
+      const resolved = String(check?.resolvedPath || pathVal);
+      const nextTrusted = Array.from(new Set([...trustedRootsOf(p), resolved]));
+      const r = await api.updateProject(p.id, { trustedRoots: nextTrusted });
+      if (r?.ok === false && r?.error) {
+        if (ui.projectRootStatus) ui.projectRootStatus.textContent = `Trust update failed: ${r.error}`;
+        return;
+      }
+      if (ui.projectRootStatus) ui.projectRootStatus.textContent = `Trusted root added: ${resolved}`;
       await loadState();
     });
 
@@ -2806,6 +3196,11 @@
       const actions = document.createElement("div");
       actions.className = "exchange-actions";
 
+      const tokenLive = document.createElement("span");
+      tokenLive.className = "exchange-token-live";
+      const inputTokens = estimatePromptTokens(text || "", !!imageDataUrl);
+      tokenLive.textContent = `In ${inputTokens} | Out 0`;
+
       const spinner = document.createElement("div");
       spinner.className = "spinner active";
 
@@ -2832,6 +3227,7 @@
       deleteBtn.className = "exchange-delete";
       deleteBtn.textContent = "✕";
 
+      actions.appendChild(tokenLive);
       actions.appendChild(spinner);
       actions.appendChild(retryBadge);
       actions.appendChild(stopBtn);
@@ -2909,6 +3305,26 @@
       let renderTimer = null;
       const controller = new AbortController();
       let stopped = false;
+      let streamCompleted = false;
+      let finalOutTokens = 0;
+      state.streamOutTokens = 0;
+      state.streamActive = true;
+      renderTokenStats();
+      let watchdogTimer = null;
+      const WATCHDOG_MS = 65000;
+      const touchWatchdog = () => {
+        if (watchdogTimer) clearTimeout(watchdogTimer);
+        watchdogTimer = setTimeout(() => {
+          if (stopped || streamCompleted) return;
+          stopped = true;
+          controller.abort();
+          const errDiv = document.createElement("div");
+          errDiv.style.color = "#e03131";
+          errDiv.textContent = "No stream activity for too long. Request stopped by watchdog.";
+          assistantBubble.appendChild(errDiv);
+          ui.messages.scrollTop = ui.messages.scrollHeight;
+        }, WATCHDOG_MS);
+      };
 
       const flushRender = () => {
         renderTimer = null;
@@ -2944,11 +3360,13 @@
         stopBtn.textContent = "Stopped";
       };
       try {
+        touchWatchdog();
         for await (const chunk of api.chatStream(
           state.messages,
-          0.2,
+          getEffectiveTemperature(),
           controller.signal
         )) {
+          touchWatchdog();
           // Aborted: show a neutral note and stop
           if (chunk && chunk.type === "aborted") {
             ensureOpen();
@@ -2957,11 +3375,18 @@
             note.textContent = "Request aborted.";
             assistantBubble.appendChild(note);
             break;
+          } else if (chunk && chunk.type === "done") {
+            streamCompleted = true;
+            break;
           }
 
           // Normal assistant text tokens
           if (typeof chunk === "string") {
             pendingShown = chunk;
+            finalOutTokens = estimateTokens(chunk);
+            state.streamOutTokens = finalOutTokens;
+            tokenLive.textContent = `In ${inputTokens} | Out ${finalOutTokens}`;
+            renderTokenStats();
             scheduleRender();
 
             // Tool results (print_tree, read_file, etc.)
@@ -3046,6 +3471,10 @@
           ui.messages.scrollTop = ui.messages.scrollHeight;
         }
       } finally {
+        if (watchdogTimer) {
+          clearTimeout(watchdogTimer);
+          watchdogTimer = null;
+        }
         if (renderTimer !== null) {
           clearTimeout(renderTimer);
           flushRender();
@@ -3055,12 +3484,22 @@
         if (typeof retryBadge !== "undefined") {
           retryBadge.style.display = "none";
         }
+        const totalTokens = inputTokens + finalOutTokens;
+        const summary = document.createElement("div");
+        summary.className = "exchange-token-total";
+        summary.textContent = `Tokens total: ${totalTokens} (input ${inputTokens} + output ${finalOutTokens})`;
+        body.appendChild(summary);
+        state.streamActive = false;
+        state.streamOutTokens = 0;
+        renderTokenStats();
       }
 
-      const assistantMessage = { role: "assistant", content: shown, ts: Date.now() };
-      state.messages.push(assistantMessage);
-      if (state.activeChatId) {
-        await api.appendChatMessage(state.activeChatId, assistantMessage);
+      if (shown && shown.trim()) {
+        const assistantMessage = { role: "assistant", content: shown, ts: Date.now() };
+        state.messages.push(assistantMessage);
+        if (state.activeChatId) {
+          await api.appendChatMessage(state.activeChatId, assistantMessage);
+        }
       }
     }
 
@@ -3085,9 +3524,14 @@
       const imageDataUrl = pendingAttachment.dataUrl;
       if (!text && !imageDataUrl) return;
       ui.prompt.value = "";
+      renderTokenStats();
       startExchange({ text, imageDataUrl });
       clearAttachment();
     };
+
+    ui.prompt?.addEventListener("input", () => {
+      renderTokenStats();
+    });
 
     ui.imageInput?.addEventListener("change", async (e) => {
       const files = e.target?.files;
@@ -3131,7 +3575,9 @@
     });
 
     clearAttachment();
+    renderTokenStats();
     setSidebarTab("projects");
+    updateSidebarToggleUI();
     loadState();
     perfPollingHandle = setInterval(() => {
       refreshPerfPanel();

@@ -176,9 +176,10 @@ async function applyParsedPatch(getRoot: GetRootFn, parsed: ParsedPatch): Promis
   }
 
   let lines = original.replace(/\r\n/g, "\n").split("\n");
+  let lineOffset = 0;
 
   for (const h of parsed.hunks) {
-    const start = h.oldRange.start - 1;
+    const start = h.oldRange.start - 1 + lineOffset;
     if (start < 0 || start > lines.length) {
       throw new Error(`Invalid hunk start ${h.oldRange.start} for file "${parsed.path}"`);
     }
@@ -200,6 +201,7 @@ async function applyParsedPatch(getRoot: GetRootFn, parsed: ParsedPatch): Promis
     }
 
     lines.splice(start, h.oldRange.count, ...replace);
+    lineOffset += replace.length - h.oldRange.count;
   }
 
   const finalText = lines.join("\n") + "\n";

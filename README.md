@@ -219,85 +219,183 @@ Then adapt the bridge to forward the API key in headers.
 | **0.1.0** | Oct 2025 | Initial PoC with direct `server.tool()` API |
 
 
-## Chat + Dashboard UI (Lightweight)
+## Chat + Dashboard UI (Current)
 
-A tiny web UI is included to:
-- stream chat with your selected LLM,
-- toggle **MCP tools ON/OFF**,
-- change the **sandbox root** (MCP_ROOT_DIR),
-- query `/models` and pick a **model**,
-- **open & save files** safely inside the sandbox,
-- render code blocks with **Copy** button.
+The dashboard is now a full local workspace manager with:
+- project-based roots (each project has its own `rootDir`)
+- per-project profiles (`model`, `temperature`, `maxTokens`, MCP tools on/off)
+- project/chat pinning and menu actions (`⋯`)
+- chat archive and bulk-delete workflows
+- fuzzy search + highlight + pinned/recent/archived filters
+- root safety checks (`validate`, `dry-run`, health indicator)
+- tool activity panel (live `tool_call` / `tool_result` / `tool_done`)
+- backup/restore of UI state
+- optional token protection for API endpoints
 
-### Start the UI
-```bash
-npm run dashboard
-# then open http://localhost:8787/
-```
-
-### Endpoints
-- `GET /` – serves the UI page
-- `GET /state` – get current runtime (mcpEnabled, rootDir, apiBase, model)
-- `POST /state` – update runtime (persists to `runtime.json`)
-- `GET /models` – lists models from `${apiBase}/models` (LM Studio / Ollama compatible)
-- `POST /chat` – streams chat via `${apiBase}/chat/completions` (OpenAI-compatible)
-- `POST /fs/read` – read a file within sandbox root
-- `POST /fs/write` – write a file within sandbox root
-
-### Runtime store (`runtime.json`)
-```json
-{
-  "mcpEnabled": true,
-  "rootDir": ".",
-  "apiBase": "http://127.0.0.1:1234/v1",
-  "model": "qwen2.5-coder:7b-instruct"
-}
-```
-
-If you also import the runtime in `src/mcp/server.ts` and `src/bridge/bridge.ts`, toggling settings in the UI applies **live**.
-
-
-## Live runtime wiring in MCP & Bridge
-
-Both the MCP server and the bridge now read **apiBase**, **model**, **rootDir**, and **mcpEnabled** from the shared runtime store at `runtime.json` via:
-
-```ts
-import { initRuntime, getRuntime } from '../runtime/index.js';
-await initRuntime();
-```
-
-- Toggle settings in the Dashboard UI (or edit `runtime.json`) and they take effect **without rebuild**.
-- MCP tools should respect `mcpEnabled` and file operations are confined to `rootDir`.
-
-
-## How to run (Dashboard + Agent Tools)
-
-1. Start your LLM backend (LM Studio or Ollama).
-   - LM Studio default API: `http://127.0.0.1:1234/v1`
-   - Ollama default API: `http://127.0.0.1:11434/v1`
-
-2. Install and start the dashboard:
+### Start
 ```bash
 npm install
 npm run dashboard
-# Open http://localhost:8787/
+# open http://localhost:8787/
 ```
 
-3. In the left sidebar:
-   - Set **LLM API Base** to your backend’s `/v1` endpoint.
-   - Click ↻ to fetch models, choose one, then **Save**.
-   - Toggle **Enable MCP Tools** if you’re using the MCP server/bridge.
-   - Set **Sandbox Root** to your project root for safe file access.
+### Core Runtime Notes
+- Runtime state is persisted in `runtime.json`.
+- UI workspace state is persisted in `db/ui_state.json` (with `.bak` backup writes).
+- Project state schema is versioned (`version: 2`) and includes:
+  - project `pinned`
+  - project profile fields: `temperature`, `maxTokens`
+  - chat `archived`
 
-4. Chat usage:
-   - Ask normally, e.g., “show the repo tree depth 3”.
-   - The model may emit an internal directive like  
-     `<|channel|>commentary to=repo_browser.print_tree {"path":"", "depth":3}`  
-     The dashboard now **intercepts and executes** that and prints the tree.
+### Dashboard Tabs
+- `Proj`: projects/chats, root management, import/backup
+- `Set`: model/profile/session token/settings
+- `Tools`: live tool telemetry stream
+- `Perf`: request/tool performance metrics
 
-5. File editor:
-   - Enter a relative path (e.g., `README.md`), click **Open**, edit and **Save**.
+### Project & Chat Features
+- Projects:
+  - `⋯` menu: `Pin/Unpin`, `Duplicate`, `Export`, `Rename`, `Delete`
+  - Import project config from JSON
+  - Backup full UI state
+- Chats:
+  - `⋯` menu: `Pin/Unpin`, `Archive`, `Rename`, `Delete`
+  - Bulk delete by project (configurable archived/pinned inclusion server-side)
+- Search:
+  - fuzzy scoring
+  - query highlight
+  - filter mode (`all`, `pinned`, `recent`, and for chats `archived`)
 
-### Notes
-- File operations are sandboxed to `runtime.json` → `rootDir`.
-- You can add more tools by following the same pattern inside `src/control/server.ts`.
+### Root Safety & Onboarding
+- `Pick Folder` uses native Windows folder picker via server endpoint.
+- Root path validation checks:
+  - exists
+  - is directory
+  - readable
+  - writable
+- `Dry-run Root` previews entries and confirms access.
+- Recent roots endpoint suggests candidate directories from prior project roots and runtime root.
+
+### Chat QoL
+- `Regenerate` resends from last user prompt.
+- Retry button supports edit-and-resend via custom modal.
+- Optional message timestamps display in chat history.
+- SSE stream includes retries/errors and tool telemetry.
+
+### Optional Access Control
+Set in `.env`:
+```bash
+DASHBOARD_AUTH_TOKEN=your-local-token
+```
+When set:
+- all non-public endpoints require token
+- send token via `x-dashboard-token` header (or `Authorization: Bearer ...`)
+- UI supports entering/storing session token locally
+
+### API Endpoints (Dashboard Server)
+
+#### State & Health
+- `GET /`
+- `GET /healthz`
+- `GET /state`
+- `POST /state`
+- `POST /state/backup`
+- `POST /state/restore`
+
+#### Projects
+- `GET /projects`
+- `POST /projects`
+- `POST /projects/active`
+- `PATCH /projects/:id`
+- `DELETE /projects/:id`
+- `POST /projects/:id/duplicate`
+- `GET /projects/:id/export`
+- `POST /projects/import`
+
+#### Chats
+- `GET /projects/:id/chats?includeArchived=true|false`
+- `POST /projects/:id/chats`
+- `POST /projects/:id/chats/bulk-delete`
+- `POST /chats/active`
+- `GET /chats/:id`
+- `PATCH /chats/:id`
+- `DELETE /chats/:id`
+- `POST /chats/:id/messages`
+- `POST /chats/:id/archive`
+
+#### Model / Chat Stream
+- `GET /models`
+- `POST /chat` (SSE, includes tool events)
+- `POST /abort`
+
+#### Filesystem / Root Safety
+- `POST /fs/read`
+- `POST /fs/write`
+- `POST /fs/pick-directory`
+- `POST /fs/validate-directory`
+- `POST /fs/dry-run-root`
+- `GET /fs/recent-roots`
+
+#### MCP HTTP Helpers
+- `POST /mcp/apply_patch`
+- `POST /mcp/rewrite_file`
+
+#### Performance
+- `GET /perf?limit=N`
+
+### Environment Variables (Dashboard-Relevant)
+- `DASHBOARD_PORT` (default `8787`)
+- `LMSTUDIO_API_BASE` (default `http://localhost:1234/v1`)
+- `DASHBOARD_BASE` (default `http://localhost:${DASHBOARD_PORT}`)
+- `DASHBOARD_AUTH_TOKEN` (optional)
+- `TREE_CONCURRENCY`
+- `PERF_LOGS`
+- `PERF_EVENTS_MAX`
+- `TOOL_CALL_TIMEOUT_MS`
+- `UI_STATE_JSON`
+- `CHAT_MESSAGES_MAX`
+
+### Developer Notes
+- The dashboard server is in `src/control/server.ts`.
+- Persistent state logic is in `src/control/stateStore.ts`.
+- Frontend is a single-file UI in `src/control/index.html`.
+- Build:
+```bash
+npm run build
+```
+
+## Dashboard Enhancements (April 14, 2026)
+
+### Implemented
+- fixed project profile persistence bug:
+  - `temperature` and `maxTokens` now persist on project update
+- chat send now uses active project temperature instead of fixed `0.2`
+- explicit SSE completion event:
+  - server emits `event: done` with status (`done` / `aborted` / `error`)
+  - client consumes `done` and added stream watchdog timeout fallback
+- request body hardening:
+  - request-size cap via `MAX_JSON_BODY_BYTES` (default `1048576`)
+  - early reject on oversized `content-length`
+- XSS hardening:
+  - escaped code-block language attribute (`data-lang`)
+- virtualized rendering for project/chat lists (better scaling on large datasets)
+- modal keyboard UX improvement:
+  - Enter behavior is safer in textareas (`Ctrl/Cmd+Enter` to submit)
+- undo for destructive actions:
+  - snapshot-based undo snackbar for project/chat delete, archive, bulk delete
+- root trust policy:
+  - per-project `trustedRoots` allowlist
+  - health line includes trust state (`trusted` / `untrusted`)
+  - untrusted root changes require explicit `TRUST` confirmation
+- token counter:
+  - composer shows estimated input/output tokens in real time
+- added smoke test script:
+  - `npm run test:e2e:smoke`
+
+### New/Updated API Notes
+- `GET /state/ui`: returns full UI state snapshot (used by undo/restore)
+- `POST /chat` SSE now includes `done` event
+
+### Updated State Schema
+- UI state version is now `3`
+- project fields now include `trustedRoots: string[]`

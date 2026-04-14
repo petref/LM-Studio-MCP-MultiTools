@@ -50,6 +50,7 @@ const MODELS_CACHE_TTL_MS = 10_000;
 const MAX_TREE_CONCURRENCY = Math.max(1, Number(process.env.TREE_CONCURRENCY || 8));
 const PERF_LOGS_ENABLED = (process.env.PERF_LOGS || "false").toLowerCase() === "true";
 const MAX_PERF_EVENTS = Math.max(50, Number(process.env.PERF_EVENTS_MAX || 400));
+const MAX_JSON_BODY_BYTES = Math.max(1024, Number(process.env.MAX_JSON_BODY_BYTES || 1024 * 1024));
 const DASHBOARD_AUTH_TOKEN = (process.env.DASHBOARD_AUTH_TOKEN || "").trim();
 
 const IGNORED_DIRS = new Set([
@@ -185,7 +186,14 @@ function isAuthorized(req: any): boolean {
 async function readJsonBody(req: any): Promise<any> {
   return await new Promise((resolve, reject) => {
     let body = "";
-    req.on("data", (c: any) => (body += c));
+    req.on("data", (c: any) => {
+      body += c;
+      if (Buffer.byteLength(body, "utf8") > MAX_JSON_BODY_BYTES) {
+        const err: any = new Error(`Payload too large (max ${MAX_JSON_BODY_BYTES} bytes)`);
+        err.statusCode = 413;
+        reject(err);
+      }
+    });
     req.on("end", () => {
       try {
         resolve(body ? JSON.parse(body) : {});
@@ -240,6 +248,7 @@ function projectSettingsFallback(): ProjectSettings {
     mcpEnabled: dashboardState.mcpEnabled !== false,
     temperature: 0.2,
     maxTokens: 4096,
+    trustedRoots: [dashboardState.rootDir || "."],
   };
 }
 
@@ -663,6 +672,11 @@ type ChatContext = {
   executeTool: ToolExecutor;
 };
 
+type ChatRoundResult =
+  | { status: "done" }
+  | { status: "error"; message: string }
+  | { status: "upstream_error"; message: string };
+
 const TOOLS = [
   {
     type: "function",
@@ -716,14 +730,15 @@ const TOOLS = [
   },
 ];
 
-async function runChatWithTools(ctx: ChatContext, messages: any[], depth = 0): Promise<void> {
+async function runChatWithTools(ctx: ChatContext, messages: any[], depth = 0): Promise<ChatRoundResult> {
   const roundStartedAt = process.hrtime.bigint();
   const { res, lmAbort, effectiveModel, payload, toolsPayload, executeTool } = ctx;
 
   if (depth > MAX_TOOL_DEPTH) {
     res.write("event: error\n");
-    res.write(`data: ${JSON.stringify({ message: "Too many tool-call rounds, aborting." })}\n\n`);
-    return;
+    const message = "Too many tool-call rounds, aborting.";
+    res.write(`data: ${JSON.stringify({ message })}\n\n`);
+    return { status: "error", message };
   }
 
   const lmUrl = dashboardState.apiBase || LM_CHAT_URL;
@@ -768,14 +783,15 @@ async function runChatWithTools(ctx: ChatContext, messages: any[], depth = 0): P
 
   if (!resp || !resp.ok || !resp.body) {
     res.write("event: error\n");
-    res.write(`data: ${JSON.stringify({ message: lastFetchError || "Upstream LM fetch failed" })}\n\n`);
+    const message = lastFetchError || "Upstream LM fetch failed";
+    res.write(`data: ${JSON.stringify({ message })}\n\n`);
     perfLog("chat.round", {
       depth,
       status: "upstream_error",
       attempts: attemptsUsed,
       elapsedMs: elapsedMs(roundStartedAt),
     });
-    return;
+    return { status: "upstream_error", message };
   }
 
   const reader = resp.body.getReader();
@@ -790,11 +806,13 @@ async function runChatWithTools(ctx: ChatContext, messages: any[], depth = 0): P
     if (done) break;
 
     sseBuffer += decoder.decode(value, { stream: true });
-    let sep = sseBuffer.indexOf("\n\n");
+    let sep = sseBuffer.search(/\r?\n\r?\n/);
     while (sep !== -1) {
       const rawEvent = sseBuffer.slice(0, sep);
-      sseBuffer = sseBuffer.slice(sep + 2);
-      sep = sseBuffer.indexOf("\n\n");
+      const delimMatch = sseBuffer.slice(sep).match(/^\r?\n\r?\n/);
+      const delimLen = delimMatch ? delimMatch[0].length : 2;
+      sseBuffer = sseBuffer.slice(sep + delimLen);
+      sep = sseBuffer.search(/\r?\n\r?\n/);
 
       const lines = rawEvent.split("\n");
       const dataLines: string[] = [];
@@ -922,13 +940,13 @@ async function runChatWithTools(ctx: ChatContext, messages: any[], depth = 0): P
         attempts: attemptsUsed,
         elapsedMs: elapsedMs(roundStartedAt),
       });
-      await runChatWithTools(ctx, nextMessages, depth + 1);
-      return;
+      return await runChatWithTools(ctx, nextMessages, depth + 1);
     }
 
     res.write("event: error\n");
-    res.write(`data: ${JSON.stringify({ message: "Model emitted tool_calls without a valid function name." })}\n\n`);
-    return;
+    const message = "Model emitted tool_calls without a valid function name.";
+    res.write(`data: ${JSON.stringify({ message })}\n\n`);
+    return { status: "error", message };
   }
 
   perfLog("chat.round", {
@@ -937,6 +955,7 @@ async function runChatWithTools(ctx: ChatContext, messages: any[], depth = 0): P
     attempts: attemptsUsed,
     elapsedMs: elapsedMs(roundStartedAt),
   });
+  return { status: "done" };
 }
 
 function buildBaseMessages(userMessages: any[], currentRoot: string) {
@@ -992,10 +1011,20 @@ async function handleChat(req: any, res: any) {
       executeTool,
     };
 
-    await runChatWithTools(ctx, baseMessages);
+    const round = await runChatWithTools(ctx, baseMessages);
+
+    if (round.status !== "done") {
+      chatStatus = "error";
+      res.write("event: done\n");
+      res.write(`data: ${JSON.stringify({ ok: false, status: round.status, message: round.message })}\n\n`);
+      res.end();
+      return;
+    }
 
     stopHeartbeat(heartbeat);
     activeLmAbortController = null;
+    res.write("event: done\n");
+    res.write(`data: ${JSON.stringify({ ok: true, status: "done" })}\n\n`);
     res.end();
   } catch (e: any) {
     activeLmAbortController = null;
@@ -1003,7 +1032,11 @@ async function handleChat(req: any, res: any) {
 
     if (e?.name === "AbortError") {
       chatStatus = "aborted";
-      try { res.end(); } catch { }
+      try {
+        res.write("event: done\n");
+        res.write(`data: ${JSON.stringify({ ok: true, status: "aborted" })}\n\n`);
+        res.end();
+      } catch { }
       return;
     }
 
@@ -1011,6 +1044,8 @@ async function handleChat(req: any, res: any) {
     try {
       res.write("event: error\n");
       res.write(`data: ${JSON.stringify({ message: e?.message || "Internal error" })}\n\n`);
+      res.write("event: done\n");
+      res.write(`data: ${JSON.stringify({ ok: false, status: "error" })}\n\n`);
       res.end();
     } catch {
       // ignore
@@ -1043,6 +1078,10 @@ const server = createServer(async (req, res) => {
   const reqUrl = req.url || "/";
   const urlObj = new URL(reqUrl, `http://localhost:${PORT}`);
   const pathname = urlObj.pathname;
+  const contentLen = Number(req.headers?.["content-length"] || 0);
+  if (contentLen > MAX_JSON_BODY_BYTES) {
+    return json(res, { ok: false, error: `Payload too large (max ${MAX_JSON_BODY_BYTES} bytes)` }, 413);
+  }
 
   // Let MCP handler own these endpoints
   if (pathname === "/mcp/apply_patch" || pathname === "/mcp/rewrite_file") return;
@@ -1075,6 +1114,7 @@ const server = createServer(async (req, res) => {
           mcpEnabled: patch.mcpEnabled,
           temperature: patch.temperature,
           maxTokens: patch.maxTokens,
+          trustedRoots: patch.trustedRoots,
         } as any,
         projectSettingsFallback()
       );
@@ -1103,6 +1143,7 @@ const server = createServer(async (req, res) => {
           mcpEnabled: body?.mcpEnabled,
           temperature: body?.temperature,
           maxTokens: body?.maxTokens,
+          trustedRoots: body?.trustedRoots,
         } as any,
         projectSettingsFallback()
       );
@@ -1143,6 +1184,7 @@ const server = createServer(async (req, res) => {
             mcpEnabled: body?.mcpEnabled,
             temperature: body?.temperature,
             maxTokens: body?.maxTokens,
+            trustedRoots: body?.trustedRoots,
           } as any,
           projectSettingsFallback()
         );
@@ -1450,6 +1492,15 @@ const server = createServer(async (req, res) => {
       const next = await restoreUIState(payload, projectSettingsFallback());
       await syncActiveProjectIntoRuntime();
       return json(res, { ok: true, state: next });
+    } catch (e: any) {
+      return json(res, { ok: false, error: e?.message || String(e) }, 500);
+    }
+  }
+
+  if (pathname === "/state/ui" && req.method === "GET") {
+    try {
+      const full = getUIState();
+      return json(res, { ok: true, state: full });
     } catch (e: any) {
       return json(res, { ok: false, error: e?.message || String(e) }, 500);
     }

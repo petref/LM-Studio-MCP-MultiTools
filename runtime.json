@@ -1,6 +1,6 @@
 {
   "mcpEnabled": true,
-  "rootDir": "E:\\GIT\\AI\\GIT\\mcp",
+  "rootDir": "E:\\GIT\\AI\\GIT\\CookingChef",
   "apiBase": "http://127.0.0.1:1234/v1/chat/completions",
   "model": "qwen/qwen3-vl-8b"
 }

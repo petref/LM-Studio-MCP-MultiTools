@@ -37,6 +37,7 @@ const MAX_ENTRIES_PER_DIR = 200;
 const HEARTBEAT_MS = 15000;
 const MAX_MODEL_CHARS = 32000;
 const MAX_TOOL_DEPTH = 30;
+const TOOL_CALL_TIMEOUT_MS = Math.max(1000, Number(process.env.TOOL_CALL_TIMEOUT_MS || 20000));
 const MODELS_CACHE_TTL_MS = 10_000;
 const MAX_TREE_CONCURRENCY = Math.max(1, Number(process.env.TREE_CONCURRENCY || 8));
 const PERF_LOGS_ENABLED = (process.env.PERF_LOGS || "false").toLowerCase() === "true";
@@ -237,6 +238,48 @@ async function syncActiveProjectIntoRuntime() {
     model: dashboardState.model,
     mcpEnabled: dashboardState.mcpEnabled,
   });
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function getToolArgValidationError(toolName: string, args: any): string | null {
+  const isObject = !!args && typeof args === "object" && !Array.isArray(args);
+  if (!isObject) return "arguments must be a JSON object";
+
+  const needsPath = new Set([
+    "repo_browser.read_file",
+    "repo_browser.create_directory",
+    "repo_browser.create_file",
+    "repo_browser.rewrite_file",
+    "repo_browser.print_tree",
+  ]);
+
+  if (needsPath.has(toolName) && typeof args.path !== "string") {
+    return "missing required string field: path";
+  }
+  if (toolName === "repo_browser.create_file" && typeof args.content !== "string") {
+    return "missing required string field: content";
+  }
+  if (toolName === "repo_browser.rewrite_file" && typeof args.content !== "string") {
+    return "missing required string field: content";
+  }
+  if (toolName === "repo_browser.apply_patch" && typeof args.patch !== "string") {
+    return "missing required string field: patch";
+  }
+
+  return null;
 }
 
 // Tracks currently running LM request so /abort can cancel it
@@ -718,18 +761,47 @@ async function runChatWithTools(ctx: ChatContext, messages: any[], depth = 0): P
 
     for (let i = 0; i < toolBuffers.length; i++) {
       const buf = toolBuffers[i];
-      if (!buf?.function?.name) continue;
+      const name = buf?.function?.name;
+      if (!name) continue;
 
-      let parsedArgs: any;
+      const rawArgs = typeof buf.function.arguments === "string" ? buf.function.arguments : "{}";
+      let parsedArgs: any = {};
       try {
-        parsedArgs = JSON.parse(buf.function.arguments || "{}");
+        parsedArgs = JSON.parse(rawArgs || "{}");
       } catch {
-        parsedArgs = {};
+        parsedArgs = { __parse_error: "invalid_json", __raw: rawArgs };
       }
 
       const id = buf.id || `tool_call_${i}`;
-      const name = buf.function.name;
-      const result = await executeTool(name, parsedArgs);
+      let result: any;
+
+      const validationError = getToolArgValidationError(name, parsedArgs);
+      if (validationError) {
+        result = {
+          error: "Invalid tool call arguments",
+          tool: name,
+          detail: validationError,
+          raw: rawArgs.slice(0, 400),
+        };
+        res.write("event: tool_result\n");
+        res.write(`data: ${JSON.stringify({ tool: name, result })}\n\n`);
+      } else {
+        try {
+          result = await withTimeout(
+            executeTool(name, parsedArgs),
+            TOOL_CALL_TIMEOUT_MS,
+            `tool ${name}`
+          );
+        } catch (e: any) {
+          result = {
+            error: "Tool execution failed",
+            tool: name,
+            detail: String(e?.message || e),
+          };
+          res.write("event: tool_result\n");
+          res.write(`data: ${JSON.stringify({ tool: name, result })}\n\n`);
+        }
+      }
 
       toolCallsForMsg.push({
         id,
@@ -758,6 +830,10 @@ async function runChatWithTools(ctx: ChatContext, messages: any[], depth = 0): P
       await runChatWithTools(ctx, nextMessages, depth + 1);
       return;
     }
+
+    res.write("event: error\n");
+    res.write(`data: ${JSON.stringify({ message: "Model emitted tool_calls without a valid function name." })}\n\n`);
+    return;
   }
 
   perfLog("chat.round", {

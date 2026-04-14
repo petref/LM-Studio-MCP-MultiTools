@@ -8,6 +8,24 @@ import { TextDecoder } from "node:util";
 import { attachMCPToServer } from "../mcp/server.js";
 import { fileURLToPath } from "node:url";
 import { Agent } from "undici";
+import {
+  appendChatMessage,
+  createChat,
+  createProject,
+  deleteChat,
+  deleteProject,
+  getActiveProject,
+  getChat,
+  getUIState,
+  initUIState,
+  listChats,
+  listProjects,
+  setActiveChat,
+  setActiveProject,
+  updateChat,
+  updateProject,
+  type ProjectSettings,
+} from "./stateStore.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -190,6 +208,36 @@ let dashboardState: DashboardState = {
   mcpEnabled: getRuntime().mcpEnabled !== false,
 };
 let modelsCache: { url: string; expiresAt: number; data: any } | null = null;
+
+function projectSettingsFallback(): ProjectSettings {
+  return {
+    rootDir: dashboardState.rootDir || ".",
+    apiBase: dashboardState.apiBase || LM_CHAT_URL,
+    model: dashboardState.model,
+    mcpEnabled: dashboardState.mcpEnabled !== false,
+  };
+}
+
+function applyProjectToDashboard(project: ProjectSettings) {
+  dashboardState = {
+    ...dashboardState,
+    rootDir: project.rootDir || ".",
+    apiBase: normalizeApiBase(project.apiBase || dashboardState.apiBase),
+    model: project.model || dashboardState.model,
+    mcpEnabled: project.mcpEnabled !== false,
+  };
+}
+
+async function syncActiveProjectIntoRuntime() {
+  const active = getActiveProject();
+  applyProjectToDashboard(active);
+  await saveRuntime({
+    rootDir: dashboardState.rootDir,
+    apiBase: dashboardState.apiBase,
+    model: dashboardState.model,
+    mcpEnabled: dashboardState.mcpEnabled,
+  });
+}
 
 // Tracks currently running LM request so /abort can cancel it
 let activeLmAbortController: AbortController | null = null;
@@ -740,6 +788,7 @@ async function handleChat(req: any, res: any) {
   let heartbeat: NodeJS.Timeout | null = null;
 
   try {
+    await syncActiveProjectIntoRuntime();
     const payload: ChatPayload = await readJsonBody(req);
     const userMessages = payload.messages || [];
     userMsgCount = userMessages.length;
@@ -816,43 +865,207 @@ dashboardState = {
   mcpEnabled: getRuntime().mcpEnabled !== false,
 };
 
+await initUIState(projectSettingsFallback());
+await syncActiveProjectIntoRuntime();
+
 const server = createServer(async (req, res) => {
+  const reqUrl = req.url || "/";
+  const urlObj = new URL(reqUrl, `http://localhost:${PORT}`);
+  const pathname = urlObj.pathname;
+
   // Let MCP handler own these endpoints
-  if (req.url === "/mcp/apply_patch" || req.url === "/mcp/rewrite_file") return;
+  if (pathname === "/mcp/apply_patch" || pathname === "/mcp/rewrite_file") return;
 
   // ---- STATE API ----
-  if (req.url === "/state" && req.method === "GET") {
+  if (pathname === "/state" && req.method === "GET") {
+    await syncActiveProjectIntoRuntime();
     return json(res, dashboardState);
   }
 
-  if (req.url === "/state" && req.method === "POST") {
+  if (pathname === "/state" && req.method === "POST") {
     try {
       const patch = await readJsonBody(req);
+      const st = getUIState();
+      const activeId = st.activeProjectId;
+      if (!activeId) throw new Error("No active project");
 
-      // normalize apiBase if user typed base
-      const nextApiBase = normalizeApiBase(patch.apiBase ?? dashboardState.apiBase);
-
-      dashboardState = {
-        ...dashboardState,
-        ...patch,
-        apiBase: nextApiBase,
-      };
-
-      await saveRuntime({
-        apiBase: dashboardState.apiBase,
-        model: dashboardState.model,
-        rootDir: dashboardState.rootDir,
-        mcpEnabled: dashboardState.mcpEnabled,
-      });
-
+      await updateProject(
+        activeId,
+        {
+          rootDir: patch.rootDir,
+          apiBase: patch.apiBase ? normalizeApiBase(String(patch.apiBase)) : undefined,
+          model: patch.model,
+          mcpEnabled: patch.mcpEnabled,
+        } as any,
+        projectSettingsFallback()
+      );
+      await syncActiveProjectIntoRuntime();
       return json(res, dashboardState);
     } catch (e: any) {
       return json(res, { error: e?.message || String(e) }, 400);
     }
   }
 
+  // ---- Projects ----
+  if (pathname === "/projects" && req.method === "GET") {
+    return json(res, await listProjects());
+  }
+
+  if (pathname === "/projects" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const created = await createProject(
+        {
+          name: body?.name,
+          rootDir: body?.rootDir,
+          apiBase: body?.apiBase ? normalizeApiBase(String(body.apiBase)) : undefined,
+          model: body?.model,
+          mcpEnabled: body?.mcpEnabled,
+        } as any,
+        projectSettingsFallback()
+      );
+      await syncActiveProjectIntoRuntime();
+      return json(res, { ok: true, state: created });
+    } catch (e: any) {
+      return json(res, { ok: false, error: e?.message || String(e) }, 400);
+    }
+  }
+
+  if (pathname === "/projects/active" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const projectId = String(body?.projectId || "");
+      if (!projectId) throw new Error("Missing projectId");
+      const next = await setActiveProject(projectId);
+      await syncActiveProjectIntoRuntime();
+      return json(res, { ok: true, state: next });
+    } catch (e: any) {
+      return json(res, { ok: false, error: e?.message || String(e) }, 400);
+    }
+  }
+
+  const projectByIdMatch = pathname.match(/^\/projects\/([^/]+)$/);
+  if (projectByIdMatch) {
+    const projectId = decodeURIComponent(projectByIdMatch[1]);
+    if (req.method === "PATCH") {
+      try {
+        const body = await readJsonBody(req);
+        const next = await updateProject(
+          projectId,
+          {
+            name: body?.name,
+            rootDir: body?.rootDir,
+            apiBase: body?.apiBase ? normalizeApiBase(String(body.apiBase)) : undefined,
+            model: body?.model,
+            mcpEnabled: body?.mcpEnabled,
+          } as any,
+          projectSettingsFallback()
+        );
+        if (getUIState().activeProjectId === projectId) await syncActiveProjectIntoRuntime();
+        return json(res, { ok: true, state: next });
+      } catch (e: any) {
+        return json(res, { ok: false, error: e?.message || String(e) }, 400);
+      }
+    }
+    if (req.method === "DELETE") {
+      try {
+        const next = await deleteProject(projectId);
+        await syncActiveProjectIntoRuntime();
+        return json(res, { ok: true, state: next });
+      } catch (e: any) {
+        return json(res, { ok: false, error: e?.message || String(e) }, 400);
+      }
+    }
+  }
+
+  const projectChatsMatch = pathname.match(/^\/projects\/([^/]+)\/chats$/);
+  if (projectChatsMatch) {
+    const projectId = decodeURIComponent(projectChatsMatch[1]);
+    if (req.method === "GET") {
+      try {
+        return json(res, await listChats(projectId));
+      } catch (e: any) {
+        return json(res, { ok: false, error: e?.message || String(e) }, 400);
+      }
+    }
+    if (req.method === "POST") {
+      try {
+        const body = await readJsonBody(req);
+        const next = await createChat(projectId, typeof body?.title === "string" ? body.title : undefined);
+        return json(res, { ok: true, state: next });
+      } catch (e: any) {
+        return json(res, { ok: false, error: e?.message || String(e) }, 400);
+      }
+    }
+  }
+
+  // ---- Chats ----
+  if (pathname === "/chats/active" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const chatId = String(body?.chatId || "");
+      if (!chatId) throw new Error("Missing chatId");
+      const next = await setActiveChat(chatId);
+      await syncActiveProjectIntoRuntime();
+      return json(res, { ok: true, state: next });
+    } catch (e: any) {
+      return json(res, { ok: false, error: e?.message || String(e) }, 400);
+    }
+  }
+
+  const chatByIdMatch = pathname.match(/^\/chats\/([^/]+)$/);
+  if (chatByIdMatch) {
+    const chatId = decodeURIComponent(chatByIdMatch[1]);
+    if (req.method === "GET") {
+      try {
+        return json(res, { ok: true, chat: getChat(chatId) });
+      } catch (e: any) {
+        return json(res, { ok: false, error: e?.message || String(e) }, 404);
+      }
+    }
+    if (req.method === "PATCH") {
+      try {
+        const body = await readJsonBody(req);
+        const next = await updateChat(chatId, {
+          title: body?.title,
+          pinned: body?.pinned,
+          messages: body?.messages,
+        } as any);
+        return json(res, { ok: true, state: next });
+      } catch (e: any) {
+        return json(res, { ok: false, error: e?.message || String(e) }, 400);
+      }
+    }
+    if (req.method === "DELETE") {
+      try {
+        const next = await deleteChat(chatId);
+        return json(res, { ok: true, state: next });
+      } catch (e: any) {
+        return json(res, { ok: false, error: e?.message || String(e) }, 400);
+      }
+    }
+  }
+
+  const chatMessagesMatch = pathname.match(/^\/chats\/([^/]+)\/messages$/);
+  if (chatMessagesMatch && req.method === "POST") {
+    try {
+      const chatId = decodeURIComponent(chatMessagesMatch[1]);
+      const body = await readJsonBody(req);
+      const message = body?.message;
+      if (!message || typeof message !== "object") throw new Error("Missing message object");
+      const role = typeof message.role === "string" ? message.role : "user";
+      const next = await appendChatMessage(chatId, {
+        ...message,
+        role,
+      });
+      return json(res, { ok: true, state: next });
+    } catch (e: any) {
+      return json(res, { ok: false, error: e?.message || String(e) }, 400);
+    }
+  }
+
   // ---- MODELS ----
-  if (req.url === "/models" && req.method === "GET") {
+  if (pathname === "/models" && req.method === "GET") {
     try {
       const modelsUrl = toModelsUrl(dashboardState.apiBase || LM_CHAT_URL);
       const now = Date.now();
@@ -874,7 +1087,7 @@ const server = createServer(async (req, res) => {
   }
 
   // ---- FS (editor) ----
-  if (req.url === "/fs/read" && req.method === "POST") {
+  if (pathname === "/fs/read" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
       const p = String(body?.path || "");
@@ -885,7 +1098,7 @@ const server = createServer(async (req, res) => {
     }
   }
 
-  if (req.url === "/fs/write" && req.method === "POST") {
+  if (pathname === "/fs/write" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
       const p = String(body?.path || "");
@@ -898,7 +1111,7 @@ const server = createServer(async (req, res) => {
   }
 
   // ---- Serve dashboard HTML ----
-  if (req.method === "GET" && (req.url === "/" || req.url === "/index.html")) {
+  if (req.method === "GET" && (pathname === "/" || pathname === "/index.html")) {
     try {
       const indexPath = path.join(__dirname, "index.html");
       const html = await fs.readFile(indexPath, "utf8");
@@ -912,7 +1125,7 @@ const server = createServer(async (req, res) => {
   }
 
   // ---- Abort LM stream ----
-  if (req.method === "POST" && req.url === "/abort") {
+  if (req.method === "POST" && pathname === "/abort") {
     if (activeLmAbortController) {
       activeLmAbortController.abort();
       activeLmAbortController = null;
@@ -922,18 +1135,17 @@ const server = createServer(async (req, res) => {
   }
 
   // ---- Chat ----
-  if (req.method === "POST" && req.url === "/chat") {
+  if (req.method === "POST" && pathname === "/chat") {
     return handleChat(req, res);
   }
 
   // ---- Health ----
-  if (req.method === "GET" && req.url === "/healthz") {
+  if (req.method === "GET" && pathname === "/healthz") {
     return json(res, { ok: true });
   }
 
   // ---- Perf ----
-  if (req.method === "GET" && req.url?.startsWith("/perf")) {
-    const urlObj = new URL(req.url, `http://localhost:${PORT}`);
+  if (req.method === "GET" && pathname.startsWith("/perf")) {
     const limitRaw = Number(urlObj.searchParams.get("limit") || "100");
     const limit = Math.max(1, Math.min(MAX_PERF_EVENTS, Number.isFinite(limitRaw) ? limitRaw : 100));
     const recent = perfEvents.slice(-limit);
@@ -948,11 +1160,13 @@ const server = createServer(async (req, res) => {
   }
 
   // ---- Better 404: JSON for API-ish paths ----
-  const url = req.url || "";
+  const url = pathname || reqUrl;
   const wantsJson =
     url.startsWith("/state") ||
     url.startsWith("/models") ||
     url.startsWith("/perf") ||
+    url.startsWith("/projects") ||
+    url.startsWith("/chats") ||
     url.startsWith("/chat") ||
     url.startsWith("/abort") ||
     url.startsWith("/fs/") ||

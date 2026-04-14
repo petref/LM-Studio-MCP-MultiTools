@@ -1,1 +1,3 @@
 node_modules/
+db/ui_state.json
+db/ui_state.json.bak

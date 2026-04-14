@@ -47,13 +47,61 @@
       background: rgba(10, 10, 10, 0.96);
       border-right: 1px solid #222;
       padding: 16px;
-      overflow: auto;
+      overflow: hidden;
       box-shadow: 4px 0 20px rgba(0, 0, 0, 0.45);
       transition: transform 0.25s ease, opacity 0.25s ease;
     }
 
     .sidebar h3 {
       margin-top: 0;
+    }
+
+    .sidebar-layout {
+      display: grid;
+      grid-template-columns: 52px minmax(0, 1fr);
+      gap: 10px;
+      height: 100%;
+      min-height: 0;
+    }
+
+    .sidebar-tabs {
+      border-right: 1px solid #242424;
+      padding-right: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      align-items: stretch;
+    }
+
+    .sidebar-tab {
+      border-radius: 10px;
+      border: 1px solid #313131;
+      background: #101010;
+      color: #ddd;
+      font-size: 11px;
+      padding: 8px 6px;
+      line-height: 1.1;
+      text-align: center;
+    }
+
+    .sidebar-tab.active {
+      border-color: #3f8cff;
+      background: #10233f;
+      color: #e8f2ff;
+    }
+
+    .sidebar-content {
+      min-width: 0;
+      overflow: auto;
+      padding-right: 2px;
+    }
+
+    .sidebar-pane {
+      display: none;
+    }
+
+    .sidebar-pane.active {
+      display: block;
     }
 
     /* --- Main column --- */
@@ -272,6 +320,51 @@
       display: flex;
       gap: 8px;
       align-items: center;
+    }
+
+    .stack {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .list-box {
+      border: 1px solid #2e2e2e;
+      border-radius: 8px;
+      padding: 6px;
+      max-height: 160px;
+      overflow: auto;
+      background: rgba(0, 0, 0, 0.25);
+    }
+
+    .list-item {
+      width: 100%;
+      text-align: left;
+      margin-bottom: 4px;
+      background: #111;
+      border: 1px solid #2f2f2f;
+      font-size: 13px;
+    }
+
+    .list-item.active {
+      border-color: #3f8cff;
+      background: #10233f;
+    }
+
+    .list-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .mini-input {
+      width: 100%;
+      padding: 6px 8px;
+      border-radius: 8px;
+      border: 1px solid #444;
+      background: #0a0a0a;
+      color: #eee;
+      font-size: 12px;
     }
 
     input[type="text"] {
@@ -561,6 +654,10 @@
       .app-shell.sidebar-collapsed {
         grid-template-columns: minmax(0, 1fr);
       }
+
+      .sidebar-layout {
+        grid-template-columns: 46px minmax(0, 1fr);
+      }
     }
   </style>
 </head>
@@ -568,7 +665,43 @@
 <body>
   <div class="app-shell" id="appShell">
     <div class="sidebar">
-      <h3>Settings</h3>
+      <div class="sidebar-layout">
+        <div class="sidebar-tabs">
+          <button id="tabProjects" class="sidebar-tab active" type="button">Proj</button>
+          <button id="tabSettings" class="sidebar-tab" type="button">Set</button>
+          <button id="tabPerf" class="sidebar-tab" type="button">Perf</button>
+        </div>
+        <div class="sidebar-content">
+      <div id="paneProjects" class="sidebar-pane active">
+      <h3 style="margin-top:0">Projects & Chats</h3>
+      <div class="stack" style="margin-bottom:12px">
+        <div class="row">
+          <strong style="font-size:13px">Projects</strong>
+          <button id="newProject" type="button">New</button>
+        </div>
+        <input id="projectSearch" class="mini-input" type="text" placeholder="Search projects..." />
+        <div id="projectList" class="list-box"></div>
+        <div class="list-actions">
+          <button id="renameProject" type="button">Rename</button>
+          <button id="deleteProject" type="button">Delete</button>
+        </div>
+      </div>
+      <div class="stack" style="margin-bottom:12px">
+        <div class="row">
+          <strong style="font-size:13px">Chat Windows</strong>
+          <button id="newChat" type="button">New</button>
+        </div>
+        <input id="chatSearch" class="mini-input" type="text" placeholder="Search chats..." />
+        <div id="chatList" class="list-box"></div>
+        <div class="list-actions">
+          <button id="renameChat" type="button">Rename</button>
+          <button id="togglePinChat" type="button">Pin/Unpin</button>
+          <button id="deleteChat" type="button">Delete</button>
+        </div>
+      </div>
+      </div>
+      <div id="paneSettings" class="sidebar-pane">
+      <h3 style="margin-top:0">Settings</h3>
       <div class="row">
         <span id="llmHealth" class="pill">checking…</span>
       </div>
@@ -607,7 +740,10 @@
       <textarea id="fileContent" class="filebox" placeholder="file content..."></textarea>
       <div id="fsStatus" style="margin-top: 8px; font-size: 12px; color: #aaa"></div>
 
-      <div class="perf-panel">
+      </div>
+      <div id="panePerf" class="sidebar-pane">
+      <h3 style="margin-top:0">Performance</h3>
+      <div class="perf-panel" style="margin-top:0">
         <div class="perf-toolbar">
           <h3 style="margin:0">Perf</h3>
           <button id="perfRefresh" type="button">Refresh</button>
@@ -615,6 +751,9 @@
         <div id="perfStatus" class="perf-status">Loading…</div>
         <div id="perfSummary" class="perf-grid"></div>
         <div id="perfRecent" class="perf-recent"></div>
+      </div>
+      </div>
+      </div>
       </div>
     </div>
 
@@ -667,6 +806,23 @@
       perfStatus: document.getElementById("perfStatus"),
       perfSummary: document.getElementById("perfSummary"),
       perfRecent: document.getElementById("perfRecent"),
+      tabProjects: document.getElementById("tabProjects"),
+      tabSettings: document.getElementById("tabSettings"),
+      tabPerf: document.getElementById("tabPerf"),
+      paneProjects: document.getElementById("paneProjects"),
+      paneSettings: document.getElementById("paneSettings"),
+      panePerf: document.getElementById("panePerf"),
+      projectList: document.getElementById("projectList"),
+      chatList: document.getElementById("chatList"),
+      newProject: document.getElementById("newProject"),
+      newChat: document.getElementById("newChat"),
+      projectSearch: document.getElementById("projectSearch"),
+      chatSearch: document.getElementById("chatSearch"),
+      renameProject: document.getElementById("renameProject"),
+      deleteProject: document.getElementById("deleteProject"),
+      renameChat: document.getElementById("renameChat"),
+      togglePinChat: document.getElementById("togglePinChat"),
+      deleteChat: document.getElementById("deleteChat"),
       messages: document.getElementById("messages"),
       prompt: document.getElementById("prompt"),
       send: document.getElementById("send"),
@@ -680,7 +836,16 @@
       imagePreview: document.getElementById("imagePreview"),
     };
 
-    const state = { messages: [] };
+    const state = {
+      messages: [],
+      projects: [],
+      chats: [],
+      activeProjectId: null,
+      activeChatId: null,
+      projectFilter: "",
+      chatFilter: "",
+      activeSidebarTab: "projects",
+    };
     const pendingAttachment = { dataUrl: "", name: "" };
     const markdownCache = new Map();
     const MAX_MARKDOWN_CACHE = 200;
@@ -691,6 +856,22 @@
     ui.sidebarToggle.onclick = () => {
       ui.appShell.classList.toggle("sidebar-collapsed");
     };
+
+    function setSidebarTab(tab) {
+      state.activeSidebarTab = tab;
+      const tabs = [
+        { key: "projects", btn: ui.tabProjects, pane: ui.paneProjects },
+        { key: "settings", btn: ui.tabSettings, pane: ui.paneSettings },
+        { key: "perf", btn: ui.tabPerf, pane: ui.panePerf },
+      ];
+
+      for (const t of tabs) {
+        if (!t.btn || !t.pane) continue;
+        const active = t.key === tab;
+        t.btn.classList.toggle("active", active);
+        t.pane.classList.toggle("active", active);
+      }
+    }
 
     // --- Markdown / rendering helpers ------------------------------------
 
@@ -824,6 +1005,137 @@
       }
     }
 
+    function parseContentForDisplay(content) {
+      if (Array.isArray(content)) {
+        const textParts = [];
+        let imageUrl = "";
+        for (const part of content) {
+          if (part?.type === "text" && typeof part.text === "string") textParts.push(part.text);
+          if (part?.type === "image_url") {
+            const url = part?.image_url?.url;
+            if (typeof url === "string" && !imageUrl) imageUrl = url;
+          }
+        }
+        return { text: textParts.join("\n"), imageUrl };
+      }
+      return { text: typeof content === "string" ? content : "", imageUrl: "" };
+    }
+
+    function renderChatHistory() {
+      ui.messages.innerHTML = "";
+      for (const msg of state.messages) {
+        if (!msg || typeof msg !== "object") continue;
+        const role = msg.role === "assistant" ? "assistant" : "user";
+        const parsed = parseContentForDisplay(msg.content);
+        const b = bubble(role, parsed.text || (parsed.imageUrl ? "[Image attached]" : ""), ui.messages);
+        if (role === "user" && parsed.imageUrl) {
+          renderUserPrompt(b, parsed.text, parsed.imageUrl);
+        }
+      }
+    }
+
+    async function loadActiveChatMessages() {
+      if (!state.activeChatId) {
+        state.messages = [];
+        renderChatHistory();
+        return;
+      }
+      const r = await api.getChat(state.activeChatId);
+      const chat = r?.chat;
+      state.messages = Array.isArray(chat?.messages)
+        ? chat.messages.map((m) => ({ role: m.role, content: m.content }))
+        : [];
+      renderChatHistory();
+    }
+
+    function renderProjectList() {
+      ui.projectList.innerHTML = "";
+      const q = (state.projectFilter || "").toLowerCase();
+      const rows = q
+        ? state.projects.filter((p) => (p.name || "").toLowerCase().includes(q))
+        : state.projects;
+      for (const p of rows) {
+        const btn = document.createElement("button");
+        btn.className = "list-item" + (p.id === state.activeProjectId ? " active" : "");
+        btn.type = "button";
+        btn.textContent = p.name || "Project";
+        btn.onclick = async () => {
+          await api.setActiveProject(p.id);
+          await loadState();
+        };
+        ui.projectList.appendChild(btn);
+      }
+      if (!rows.length) ui.projectList.textContent = "No projects.";
+      refreshActionButtons();
+    }
+
+    function renderChatList() {
+      ui.chatList.innerHTML = "";
+      const q = (state.chatFilter || "").toLowerCase();
+      const rows = q
+        ? state.chats.filter((c) => (c.title || "").toLowerCase().includes(q))
+        : state.chats;
+      for (const c of rows) {
+        const btn = document.createElement("button");
+        btn.className = "list-item" + (c.id === state.activeChatId ? " active" : "");
+        btn.type = "button";
+        btn.textContent = `${c.pinned ? "📌 " : ""}${c.title || "Chat"}`;
+        btn.onclick = async () => {
+          await api.setActiveChat(c.id);
+          state.activeChatId = c.id;
+          await loadActiveChatMessages();
+          renderChatList();
+        };
+        ui.chatList.appendChild(btn);
+      }
+      if (!rows.length) ui.chatList.textContent = "No chats.";
+      refreshActionButtons();
+    }
+
+    async function loadWorkspaceState() {
+      const p = await api.listProjects();
+      state.projects = Array.isArray(p?.projects) ? p.projects : [];
+      state.activeProjectId = p?.activeProjectId || state.projects[0]?.id || null;
+      renderProjectList();
+
+      if (!state.activeProjectId) {
+        state.chats = [];
+        state.activeChatId = null;
+        renderChatList();
+        state.messages = [];
+        renderChatHistory();
+        return;
+      }
+
+      const c = await api.listChats(state.activeProjectId);
+      state.chats = Array.isArray(c?.chats) ? c.chats : [];
+      state.activeChatId = c?.activeChatId || state.chats[0]?.id || null;
+      renderChatList();
+      await loadActiveChatMessages();
+    }
+
+    function getActiveProjectRecord() {
+      return state.projects.find((p) => p.id === state.activeProjectId) || null;
+    }
+
+    function getActiveChatRecord() {
+      return state.chats.find((c) => c.id === state.activeChatId) || null;
+    }
+
+    function refreshActionButtons() {
+      const p = getActiveProjectRecord();
+      const c = getActiveChatRecord();
+
+      if (ui.renameProject) ui.renameProject.disabled = !p;
+      if (ui.deleteProject) ui.deleteProject.disabled = !p || state.projects.length <= 1;
+      if (ui.renameChat) ui.renameChat.disabled = !c;
+      if (ui.deleteChat) ui.deleteChat.disabled = !c;
+      if (ui.togglePinChat) {
+        ui.togglePinChat.disabled = !c;
+        ui.togglePinChat.textContent = c?.pinned ? "Unpin" : "Pin";
+      }
+    }
+
     // Tree rendering
     function renderTreeNode(node) {
       const li = document.createElement("li");
@@ -869,6 +1181,86 @@
     const api = {
       async getState() {
         const r = await fetch("/state");
+        return r.json();
+      },
+      async listProjects() {
+        const r = await fetch("/projects");
+        return r.json();
+      },
+      async createProject(payload) {
+        const r = await fetch("/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload || {}),
+        });
+        return r.json();
+      },
+      async updateProject(projectId, payload) {
+        const r = await fetch(`/projects/${encodeURIComponent(projectId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload || {}),
+        });
+        return r.json();
+      },
+      async deleteProject(projectId) {
+        const r = await fetch(`/projects/${encodeURIComponent(projectId)}`, {
+          method: "DELETE",
+        });
+        return r.json();
+      },
+      async setActiveProject(projectId) {
+        const r = await fetch("/projects/active", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId }),
+        });
+        return r.json();
+      },
+      async listChats(projectId) {
+        const r = await fetch(`/projects/${encodeURIComponent(projectId)}/chats`);
+        return r.json();
+      },
+      async createChat(projectId, title) {
+        const r = await fetch(`/projects/${encodeURIComponent(projectId)}/chats`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title }),
+        });
+        return r.json();
+      },
+      async setActiveChat(chatId) {
+        const r = await fetch("/chats/active", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chatId }),
+        });
+        return r.json();
+      },
+      async getChat(chatId) {
+        const r = await fetch(`/chats/${encodeURIComponent(chatId)}`);
+        return r.json();
+      },
+      async updateChat(chatId, payload) {
+        const r = await fetch(`/chats/${encodeURIComponent(chatId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload || {}),
+        });
+        return r.json();
+      },
+      async deleteChat(chatId) {
+        const r = await fetch(`/chats/${encodeURIComponent(chatId)}`, {
+          method: "DELETE",
+        });
+        return r.json();
+      },
+      async appendChatMessage(chatId, message) {
+        const r = await fetch(`/chats/${encodeURIComponent(chatId)}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message }),
+        });
         return r.json();
       },
       async saveState(patch) {
@@ -1133,6 +1525,7 @@
     }
 
     async function loadState() {
+      await loadWorkspaceState();
       const s = await api.getState();
       ui.apiBase.value = s.apiBase || "";
       ui.rootDir.value = s.rootDir || ".";
@@ -1188,9 +1581,71 @@
     ui.refreshModels.onclick = async () => {
       await loadState();
     };
+    ui.newProject.onclick = async () => {
+      const name = prompt("Project name");
+      if (!name) return;
+      await api.createProject({ name });
+      await loadState();
+    };
+    ui.newChat.onclick = async () => {
+      if (!state.activeProjectId) return;
+      const title = prompt("Chat title (optional)") || "New chat";
+      await api.createChat(state.activeProjectId, title);
+      await loadState();
+    };
+    ui.renameProject.onclick = async () => {
+      const p = getActiveProjectRecord();
+      if (!p) return;
+      const name = prompt("Rename project", p.name || "Project");
+      if (!name || name === p.name) return;
+      await api.updateProject(p.id, { name });
+      await loadState();
+    };
+    ui.deleteProject.onclick = async () => {
+      const p = getActiveProjectRecord();
+      if (!p) return;
+      const ok = confirm(`Delete project "${p.name}"?`);
+      if (!ok) return;
+      const r = await api.deleteProject(p.id);
+      if (r?.ok === false && r?.error) alert(r.error);
+      await loadState();
+    };
+    ui.renameChat.onclick = async () => {
+      const c = getActiveChatRecord();
+      if (!c) return;
+      const title = prompt("Rename chat", c.title || "Chat");
+      if (!title || title === c.title) return;
+      await api.updateChat(c.id, { title });
+      await loadState();
+    };
+    ui.togglePinChat.onclick = async () => {
+      const c = getActiveChatRecord();
+      if (!c) return;
+      await api.updateChat(c.id, { pinned: !c.pinned });
+      await loadState();
+    };
+    ui.deleteChat.onclick = async () => {
+      const c = getActiveChatRecord();
+      if (!c) return;
+      const ok = confirm(`Delete chat "${c.title}"?`);
+      if (!ok) return;
+      await api.deleteChat(c.id);
+      await loadState();
+    };
+    ui.projectSearch?.addEventListener("input", (e) => {
+      state.projectFilter = String(e.target?.value || "");
+      renderProjectList();
+    });
+    ui.chatSearch?.addEventListener("input", (e) => {
+      state.chatFilter = String(e.target?.value || "");
+      renderChatList();
+    });
     ui.perfRefresh.onclick = async () => {
       await refreshPerfPanel();
     };
+    ui.tabProjects?.addEventListener("click", () => setSidebarTab("projects"));
+    ui.tabSettings?.addEventListener("click", () => setSidebarTab("settings"));
+    ui.tabPerf?.addEventListener("click", () => setSidebarTab("perf"));
 
     // Folder picker -> populate rootDir with selected folder name
     ui.rootPicker?.addEventListener("change", (e) => {
@@ -1263,6 +1718,9 @@
 
       const userMessage = buildUserMessage(text, imageDataUrl);
       state.messages.push(userMessage);
+      if (state.activeChatId) {
+        await api.appendChatMessage(state.activeChatId, userMessage);
+      }
 
       const exchange = document.createElement("div");
       exchange.className = "exchange";
@@ -1521,7 +1979,11 @@
         }
       }
 
-      state.messages.push({ role: "assistant", content: shown });
+      const assistantMessage = { role: "assistant", content: shown };
+      state.messages.push(assistantMessage);
+      if (state.activeChatId) {
+        await api.appendChatMessage(state.activeChatId, assistantMessage);
+      }
     }
 
     // Send button now just delegates to startExchange
@@ -1575,6 +2037,7 @@
     });
 
     clearAttachment();
+    setSidebarTab("projects");
     loadState();
     perfPollingHandle = setInterval(() => {
       refreshPerfPanel();

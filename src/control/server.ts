@@ -51,6 +51,10 @@ const MAX_TREE_CONCURRENCY = Math.max(1, Number(process.env.TREE_CONCURRENCY || 
 const PERF_LOGS_ENABLED = (process.env.PERF_LOGS || "false").toLowerCase() === "true";
 const MAX_PERF_EVENTS = Math.max(50, Number(process.env.PERF_EVENTS_MAX || 400));
 const MAX_JSON_BODY_BYTES = Math.max(1024, Number(process.env.MAX_JSON_BODY_BYTES || 1024 * 1024));
+const MAX_READ_FILE_BYTES = Math.max(1024, Number(process.env.MAX_READ_FILE_BYTES || 256 * 1024));
+const MAX_CHUNK_LINE_SPAN = Math.max(10, Number(process.env.MAX_CHUNK_LINE_SPAN || 400));
+const MAX_SEARCH_RESULTS = Math.max(10, Number(process.env.MAX_SEARCH_RESULTS || 200));
+const MAX_SEARCH_RESULTS_PER_FILE = Math.max(1, Number(process.env.MAX_SEARCH_RESULTS_PER_FILE || 30));
 const DASHBOARD_AUTH_TOKEN = (process.env.DASHBOARD_AUTH_TOKEN || "").trim();
 
 const IGNORED_DIRS = new Set([
@@ -295,6 +299,7 @@ function getToolArgValidationError(toolName: string, args: any): string | null {
 
   const needsPath = new Set([
     "repo_browser.read_file",
+    "repo_browser.read_file_chunk",
     "repo_browser.create_directory",
     "repo_browser.create_file",
     "repo_browser.rewrite_file",
@@ -313,6 +318,29 @@ function getToolArgValidationError(toolName: string, args: any): string | null {
   if (toolName === "repo_browser.apply_patch" && typeof args.patch !== "string") {
     return "missing required string field: patch";
   }
+  if (toolName === "repo_browser.read_file_chunk") {
+    if (!Number.isInteger(args.startLine) || Number(args.startLine) < 1) {
+      return "startLine must be an integer >= 1";
+    }
+    if (!Number.isInteger(args.endLine) || Number(args.endLine) < Number(args.startLine)) {
+      return "endLine must be an integer >= startLine";
+    }
+    const span = Number(args.endLine) - Number(args.startLine) + 1;
+    if (span > MAX_CHUNK_LINE_SPAN) {
+      return `line span too large (max ${MAX_CHUNK_LINE_SPAN})`;
+    }
+  }
+  if (toolName === "repo_browser.search_code") {
+    if (typeof args.query !== "string" || !args.query.trim()) {
+      return "missing required string field: query";
+    }
+    if (args.globs !== undefined && !Array.isArray(args.globs)) {
+      return "globs must be an array of strings";
+    }
+    if (Array.isArray(args.globs) && args.globs.some((g: any) => typeof g !== "string")) {
+      return "globs must be an array of strings";
+    }
+  }
 
   return null;
 }
@@ -328,20 +356,66 @@ function getWorkspaceRoot(): string {
   return path.resolve(st || rt || process.env.MCP_ROOT_DIR || process.cwd());
 }
 
+function normalizeForCompare(inputPath: string): string {
+  const normalized = path.normalize(path.resolve(inputPath));
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function isWithinBase(basePath: string, absPath: string): boolean {
+  const baseCmp = normalizeForCompare(basePath);
+  const absCmp = normalizeForCompare(absPath);
+  const rel = path.relative(baseCmp, absCmp);
+  return !(rel.startsWith("..") || path.isAbsolute(rel));
+}
+
+function getTrustedRootsResolved(): string[] {
+  let roots: string[] = [];
+  try {
+    const active = getActiveProject();
+    roots = Array.isArray((active as any).trustedRoots) ? (active as any).trustedRoots : [];
+  } catch {
+    roots = [];
+  }
+
+  const root = getWorkspaceRoot();
+  if (!roots.some((x) => normalizeForCompare(x) === normalizeForCompare(root))) {
+    roots.unshift(root);
+  }
+
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const raw of roots) {
+    const trimmed = String(raw || "").trim();
+    if (!trimmed) continue;
+    const resolved = path.resolve(trimmed);
+    const key = normalizeForCompare(resolved);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(resolved);
+  }
+  return deduped;
+}
+
+function isTrustedAbsPath(absPath: string): boolean {
+  const candidates = getTrustedRootsResolved();
+  return candidates.some((root) => isWithinBase(root, absPath));
+}
+
+function assertTrustedAbsPath(absPath: string) {
+  if (!isTrustedAbsPath(absPath)) {
+    throw new Error(`Path is outside trusted roots: "${absPath}"`);
+  }
+}
+
 async function withinRoot(relPath: string): Promise<string> {
   const ROOT = getWorkspaceRoot();
   const rel = relPath && relPath.trim() ? relPath : ".";
   const abs = path.resolve(ROOT, rel);
 
-  const rootNorm = path.normalize(ROOT);
-  const absNorm = path.normalize(abs);
-  const rootCmp = process.platform === "win32" ? rootNorm.toLowerCase() : rootNorm;
-  const absCmp = process.platform === "win32" ? absNorm.toLowerCase() : absNorm;
-  const relFromRoot = path.relative(rootCmp, absCmp);
-
-  if (relFromRoot.startsWith("..") || path.isAbsolute(relFromRoot)) {
+  if (!isWithinBase(ROOT, abs)) {
     throw new Error(`Path escapes project root: rel="${relPath}", root="${ROOT}"`);
   }
+  assertTrustedAbsPath(abs);
   return abs;
 }
 
@@ -379,12 +453,207 @@ function normalizeToolRelPath(input: unknown): string {
   return raw;
 }
 
-async function readFileSafe(rel: string) {
+function looksBinaryBuffer(buf: Buffer): boolean {
+  if (buf.length === 0) return false;
+  const sample = buf.subarray(0, Math.min(buf.length, 8000));
+  let suspicious = 0;
+  for (let i = 0; i < sample.length; i++) {
+    const b = sample[i];
+    if (b === 0) return true;
+    const isTabOrLfOrCr = b === 9 || b === 10 || b === 13;
+    const isPrintable = b >= 32 && b <= 126;
+    if (!isTabOrLfOrCr && !isPrintable) suspicious++;
+  }
+  return suspicious / sample.length > 0.25;
+}
+
+type GuardedReadResult =
+  | { ok: true; path: string; content: string; bytes: number }
+  | { ok: false; path: string; error: string; reason: "not_found" | "too_large" | "binary" | "read_failed"; bytes?: number };
+
+async function readTextFileWithGuards(rel: string): Promise<GuardedReadResult> {
   const abs = await withinRoot(rel);
   try {
-    return await fs.readFile(abs, "utf8");
-  } catch {
-    return null;
+    const raw = await fs.readFile(abs);
+    if (raw.length > MAX_READ_FILE_BYTES) {
+      return {
+        ok: false,
+        path: rel,
+        error: `File too large (${raw.length} bytes > ${MAX_READ_FILE_BYTES} bytes)`,
+        reason: "too_large",
+        bytes: raw.length,
+      };
+    }
+    if (looksBinaryBuffer(raw)) {
+      return {
+        ok: false,
+        path: rel,
+        error: "Binary file content is blocked by guardrails",
+        reason: "binary",
+        bytes: raw.length,
+      };
+    }
+    return { ok: true, path: rel, content: raw.toString("utf8"), bytes: raw.length };
+  } catch (e: any) {
+    if (e?.code === "ENOENT") {
+      return { ok: false, path: rel, error: "File not found", reason: "not_found" };
+    }
+    return {
+      ok: false,
+      path: rel,
+      error: String(e?.message || e),
+      reason: "read_failed",
+    };
+  }
+}
+
+type GuardedChunkResult =
+  | {
+    ok: true;
+    path: string;
+    startLine: number;
+    endLine: number;
+    totalLines: number;
+    content: string;
+  }
+  | { ok: false; path: string; error: string; reason: "not_found" | "too_large" | "binary" | "read_failed" };
+
+async function readFileChunkWithGuards(rel: string, startLine: number, endLine: number): Promise<GuardedChunkResult> {
+  const full = await readTextFileWithGuards(rel);
+  if (!full.ok) return full;
+
+  const lines = full.content.replace(/\r\n/g, "\n").split("\n");
+  const totalLines = lines.length;
+  const boundedStart = Math.max(1, startLine);
+  const boundedEnd = Math.max(boundedStart, Math.min(endLine, totalLines));
+  const slice = lines.slice(boundedStart - 1, boundedEnd);
+  return {
+    ok: true,
+    path: rel,
+    startLine: boundedStart,
+    endLine: boundedEnd,
+    totalLines,
+    content: slice.join("\n"),
+  };
+}
+
+async function searchCodeSafe(query: string, globsRaw: unknown): Promise<any> {
+  const q = String(query || "").trim();
+  if (!q) return { ok: false, error: "Missing query", results: [] };
+
+  const globs = Array.isArray(globsRaw)
+    ? globsRaw.map((g) => String(g || "").trim()).filter(Boolean).slice(0, 20)
+    : [];
+
+  const root = getWorkspaceRoot();
+  assertTrustedAbsPath(path.resolve(root));
+
+  const args = [
+    "--line-number",
+    "--column",
+    "--no-heading",
+    "--color",
+    "never",
+    "--smart-case",
+    "--max-count",
+    String(MAX_SEARCH_RESULTS_PER_FILE),
+    "--max-filesize",
+    `${Math.max(1, Math.floor(MAX_READ_FILE_BYTES / 1024))}K`,
+  ];
+  for (const glob of globs) {
+    args.push("--glob", glob);
+  }
+  args.push(q, ".");
+
+  const isCaseSensitive = /[A-Z]/.test(q);
+  const needle = isCaseSensitive ? q : q.toLowerCase();
+
+  const globToRegex = (glob: string): RegExp => {
+    const escaped = glob
+      .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+      .replace(/\*/g, ".*")
+      .replace(/\?/g, ".");
+    return new RegExp(`^${escaped}$`, "i");
+  };
+
+  const globMatchers = globs.map(globToRegex);
+  const matchesGlob = (relPath: string) => {
+    if (!globMatchers.length) return true;
+    const unix = relPath.replace(/\\/g, "/");
+    return globMatchers.some((rx) => rx.test(unix) || rx.test(path.basename(unix)));
+  };
+
+  const searchFallback = async () => {
+    const results: Array<{ path: string; line: number; column: number; text: string }> = [];
+    const stack = [root];
+    while (stack.length && results.length < MAX_SEARCH_RESULTS) {
+      const dir = stack.pop() as string;
+      let entries: any[] = [];
+      try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+
+      for (const entry of entries) {
+        const abs = path.join(dir, entry.name);
+        const rel = path.relative(root, abs);
+        if (entry.isDirectory()) {
+          if (!IGNORED_DIRS.has(entry.name)) stack.push(abs);
+          continue;
+        }
+
+        if (!matchesGlob(rel)) continue;
+        let raw: Buffer;
+        try {
+          raw = await fs.readFile(abs);
+        } catch {
+          continue;
+        }
+        if (raw.length > MAX_READ_FILE_BYTES || looksBinaryBuffer(raw)) continue;
+
+        const lines = raw.toString("utf8").replace(/\r\n/g, "\n").split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          const hay = isCaseSensitive ? line : line.toLowerCase();
+          const col = hay.indexOf(needle);
+          if (col === -1) continue;
+          results.push({ path: rel, line: i + 1, column: col + 1, text: line });
+          if (results.length >= MAX_SEARCH_RESULTS) break;
+        }
+        if (results.length >= MAX_SEARCH_RESULTS) break;
+      }
+    }
+    return { ok: true, query: q, globs, results, fallback: "node" };
+  };
+
+  try {
+    const { stdout } = await execFileAsync("rg", args, {
+      cwd: root,
+      timeout: TOOL_CALL_TIMEOUT_MS,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    const lines = String(stdout || "").split(/\r?\n/).filter(Boolean);
+    const results: Array<{ path: string; line: number; column: number; text: string }> = [];
+    for (const row of lines) {
+      const m = row.match(/^(.+?):(\d+):(\d+):(.*)$/);
+      if (!m) continue;
+      results.push({
+        path: m[1],
+        line: Number(m[2]),
+        column: Number(m[3]),
+        text: m[4],
+      });
+      if (results.length >= MAX_SEARCH_RESULTS) break;
+    }
+    return { ok: true, query: q, globs, results };
+  } catch (e: any) {
+    const code = Number(e?.code);
+    if (code === 1) return { ok: true, query: q, globs, results: [] };
+    if (e?.code === "ENOENT" || e?.code === "EPERM" || String(e?.message || "").includes("spawn EPERM")) {
+      return searchFallback();
+    }
+    return { ok: false, error: String(e?.message || e), query: q, globs, results: [] };
   }
 }
 
@@ -507,6 +776,8 @@ Workspace root is: "${currentRoot}"
 TOOLS:
 - repo_browser.print_tree(path: string)
 - repo_browser.read_file(path: string)
+- repo_browser.read_file_chunk(path: string, startLine: number, endLine: number)
+- repo_browser.search_code(query: string, globs?: string[])
 - repo_browser.apply_patch(patch: string)
 - repo_browser.create_directory(path: string)
 - repo_browser.create_file(path: string, content: string)
@@ -516,6 +787,7 @@ TOOLS:
 
 // ---------------- Tool executor ----------------
 type ToolExecutor = (toolName: string, args: any) => Promise<any>;
+type RetrievalCache = Map<string, any>;
 
 function startHeartbeat(res: any): NodeJS.Timeout {
   return setInterval(() => {
@@ -533,7 +805,24 @@ function stopHeartbeat(timer: NodeJS.Timeout | null) {
   clearInterval(timer);
 }
 
-function createExecuteTool(res: any): ToolExecutor {
+function stableStringify(value: any): string {
+  if (value === null || value === undefined) return String(value);
+  if (typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((v) => stableStringify(v)).join(",")}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(",")}}`;
+}
+
+function isCacheableRetrievalTool(toolName: string): boolean {
+  return (
+    toolName === "repo_browser.print_tree" ||
+    toolName === "repo_browser.read_file" ||
+    toolName === "repo_browser.read_file_chunk" ||
+    toolName === "repo_browser.search_code"
+  );
+}
+
+function createExecuteTool(res: any, retrievalCache: RetrievalCache): ToolExecutor {
   return async (toolName: string, args: any) => {
     const startedAt = process.hrtime.bigint();
     let status = "ok";
@@ -551,9 +840,19 @@ function createExecuteTool(res: any): ToolExecutor {
     } catch { }
 
     try {
+      const cacheKey =
+        isCacheableRetrievalTool(toolName) ? `${toolName}:${stableStringify(args || {})}` : null;
+      if (cacheKey && retrievalCache.has(cacheKey)) {
+        const cached = retrievalCache.get(cacheKey);
+        res.write("event: tool_result\n");
+        res.write(`data: ${JSON.stringify({ tool: toolName, result: cached, cached: true })}\n\n`);
+        return cached;
+      }
+
       if (toolName === "repo_browser.print_tree") {
         const toolPath = normalizeToolRelPath(args.path);
         const tree = await listTree(toolPath);
+        if (cacheKey) retrievalCache.set(cacheKey, tree);
         res.write("event: tool_result\n");
         res.write(`data: ${JSON.stringify({ tool: toolName, result: tree })}\n\n`);
         return tree;
@@ -561,7 +860,25 @@ function createExecuteTool(res: any): ToolExecutor {
 
       if (toolName === "repo_browser.read_file") {
         const toolPath = normalizeToolRelPath(args.path);
-        const data = await readFileSafe(toolPath);
+        const data = await readTextFileWithGuards(toolPath);
+        if (cacheKey) retrievalCache.set(cacheKey, data);
+        res.write("event: tool_result\n");
+        res.write(`data: ${JSON.stringify({ tool: toolName, result: data })}\n\n`);
+        return data;
+      }
+
+      if (toolName === "repo_browser.read_file_chunk") {
+        const toolPath = normalizeToolRelPath(args.path);
+        const data = await readFileChunkWithGuards(toolPath, Number(args.startLine), Number(args.endLine));
+        if (cacheKey) retrievalCache.set(cacheKey, data);
+        res.write("event: tool_result\n");
+        res.write(`data: ${JSON.stringify({ tool: toolName, result: data })}\n\n`);
+        return data;
+      }
+
+      if (toolName === "repo_browser.search_code") {
+        const data = await searchCodeSafe(args.query, args.globs);
+        if (cacheKey) retrievalCache.set(cacheKey, data);
         res.write("event: tool_result\n");
         res.write(`data: ${JSON.stringify({ tool: toolName, result: data })}\n\n`);
         return data;
@@ -571,6 +888,7 @@ function createExecuteTool(res: any): ToolExecutor {
         const relPath = normalizeToolRelPath(args.path);
         const abs = await withinRoot(relPath);
         await fs.mkdir(abs, { recursive: true });
+        retrievalCache.clear();
         const result = { ok: true, created: relPath };
         res.write("event: tool_result\n");
         res.write(`data: ${JSON.stringify({ tool: toolName, result })}\n\n`);
@@ -581,6 +899,7 @@ function createExecuteTool(res: any): ToolExecutor {
         const relPath = normalizeToolRelPath(args.path);
         const content = typeof args.content === "string" ? args.content : "";
         await writeFileSafe(relPath, content);
+        retrievalCache.clear();
         const result = { ok: true, path: relPath, bytes: Buffer.byteLength(content, "utf8") };
         res.write("event: tool_result\n");
         res.write(`data: ${JSON.stringify({ tool: toolName, result })}\n\n`);
@@ -598,6 +917,7 @@ function createExecuteTool(res: any): ToolExecutor {
             dispatcher: longLMAgent,
           }).then((x) => x.json());
 
+          retrievalCache.clear();
           res.write("event: tool_result\n");
           res.write(`data: ${JSON.stringify({ tool: toolName, result: r })}\n\n`);
           return r;
@@ -622,6 +942,7 @@ function createExecuteTool(res: any): ToolExecutor {
             dispatcher: longLMAgent,
           }).then((x) => x.json());
 
+          retrievalCache.clear();
           res.write("event: tool_result\n");
           res.write(`data: ${JSON.stringify({ tool: toolName, result: r })}\n\n`);
           return r;
@@ -683,6 +1004,35 @@ const TOOLS = [
     function: {
       name: "repo_browser.read_file",
       parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "repo_browser.read_file_chunk",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          startLine: { type: "integer", minimum: 1 },
+          endLine: { type: "integer", minimum: 1 },
+        },
+        required: ["path", "startLine", "endLine"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "repo_browser.search_code",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          globs: { type: "array", items: { type: "string" } },
+        },
+        required: ["query"],
+      },
     },
   },
   {
@@ -1000,7 +1350,8 @@ async function handleChat(req: any, res: any) {
     const mcpEnabled = dashboardState.mcpEnabled !== false;
     const toolsPayload = mcpEnabled ? { tools: TOOLS, tool_choice: "auto" as const } : {};
 
-    const executeTool = createExecuteTool(res);
+    const retrievalCache: RetrievalCache = new Map();
+    const executeTool = createExecuteTool(res, retrievalCache);
 
     const ctx: ChatContext = {
       res,
@@ -1379,8 +1730,11 @@ const server = createServer(async (req, res) => {
     try {
       const body = await readJsonBody(req);
       const p = String(body?.path || "");
-      const content = await readFileSafe(p);
-      return json(res, { ok: content !== null, content });
+      const out = await readTextFileWithGuards(p);
+      if (!out.ok) {
+        return json(res, { ok: false, error: out.error, reason: out.reason }, 400);
+      }
+      return json(res, { ok: true, content: out.content, bytes: out.bytes });
     } catch (e: any) {
       return json(res, { ok: false, error: e?.message || String(e) }, 400);
     }
@@ -1579,10 +1933,12 @@ server.keepAliveTimeout = 0;
 server.headersTimeout = 0;
 
 // Attach MCP tools to same server instance WITH DYNAMIC ROOT
-attachMCPToServer(server, { getRoot: getWorkspaceRoot });
+attachMCPToServer(server, { getRoot: getWorkspaceRoot, isTrustedAbsPath });
 
 server.listen(PORT, () => {
   console.log(`[dashboard] running at http://localhost:${PORT}`);
   console.log(`LM Studio base: ${LM_BASE}`);
   console.log(`Workspace root: ${getWorkspaceRoot()}`);
 });
+
+export { server };

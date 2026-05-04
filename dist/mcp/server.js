@@ -31,6 +31,9 @@ async function withinRoot(getRoot, relPath) {
     }
     return abs;
 }
+function defaultIsTrustedAbsPath(_absPath) {
+    return true;
+}
 // ===============================================================
 // Parse patch
 // ===============================================================
@@ -97,8 +100,11 @@ export function parseSimplifiedPatch(raw) {
             else if (line.startsWith("-") && !line.startsWith("---")) {
                 current.lines.push({ type: "remove", text: line.slice(1) });
             }
+            else if (line.startsWith("\\")) {
+                // Ignore "\ No newline at end of file" markers.
+            }
             else if (!line.startsWith("***") && !line.startsWith("@@")) {
-                current.lines.push({ type: "context", text: line });
+                current.lines.push({ type: "context", text: line.startsWith(" ") ? line.slice(1) : line });
             }
         }
     }
@@ -112,8 +118,11 @@ export function parseSimplifiedPatch(raw) {
 // ===============================================================
 // Apply patch
 // ===============================================================
-async function applyParsedPatch(getRoot, parsed) {
+async function applyParsedPatch(getRoot, isTrustedAbsPath, parsed) {
     const abs = await withinRoot(getRoot, parsed.path);
+    if (!isTrustedAbsPath(abs)) {
+        throw new Error(`Refusing to write outside trusted roots: "${parsed.path}"`);
+    }
     if (parsed.op === "delete") {
         await fs.unlink(abs).catch(() => { });
         return;
@@ -130,6 +139,7 @@ async function applyParsedPatch(getRoot, parsed) {
     catch {
         throw new Error(`File not found for update: ${parsed.path}`);
     }
+    const hadTrailingNewline = original.endsWith("\n");
     let lines = original.replace(/\r\n/g, "\n").split("\n");
     let lineOffset = 0;
     for (const h of parsed.hunks) {
@@ -154,11 +164,17 @@ async function applyParsedPatch(getRoot, parsed) {
         lines.splice(start, h.oldRange.count, ...replace);
         lineOffset += replace.length - h.oldRange.count;
     }
-    const finalText = lines.join("\n") + "\n";
+    let finalText = lines.join("\n");
+    if (hadTrailingNewline && !finalText.endsWith("\n")) {
+        finalText += "\n";
+    }
     await fs.writeFile(abs, finalText, "utf8");
 }
-async function rewriteFile(getRoot, pathRel, content) {
+async function rewriteFile(getRoot, isTrustedAbsPath, pathRel, content) {
     const abs = await withinRoot(getRoot, pathRel);
+    if (!isTrustedAbsPath(abs)) {
+        throw new Error(`Refusing to write outside trusted roots: "${pathRel}"`);
+    }
     await fs.mkdir(path.dirname(abs), { recursive: true });
     await fs.writeFile(abs, content ?? "", "utf8");
 }
@@ -167,6 +183,7 @@ async function rewriteFile(getRoot, pathRel, content) {
 // ===============================================================
 export function attachMCPToServer(server, opts = {}) {
     const getRoot = opts.getRoot || defaultGetRoot;
+    const isTrustedAbsPath = opts.isTrustedAbsPath || defaultIsTrustedAbsPath;
     server.on("request", async (req, res) => {
         if (req.method !== "POST")
             return;
@@ -177,7 +194,7 @@ export function attachMCPToServer(server, opts = {}) {
                 try {
                     const { patch } = JSON.parse(body || "{}");
                     const parsed = parseSimplifiedPatch(String(patch || ""));
-                    await applyParsedPatch(getRoot, parsed);
+                    await applyParsedPatch(getRoot, isTrustedAbsPath, parsed);
                     res.statusCode = 200;
                     res.setHeader("Content-Type", "application/json");
                     res.end(JSON.stringify({ ok: true, path: parsed.path, op: parsed.op }));
@@ -199,7 +216,7 @@ export function attachMCPToServer(server, opts = {}) {
                     if (typeof relPath !== "string" || !relPath.trim()) {
                         throw new Error("Missing or invalid 'path' for rewrite_file");
                     }
-                    await rewriteFile(getRoot, relPath, typeof content === "string" ? content : "");
+                    await rewriteFile(getRoot, isTrustedAbsPath, relPath, typeof content === "string" ? content : "");
                     res.statusCode = 200;
                     res.setHeader("Content-Type", "application/json");
                     res.end(JSON.stringify({ ok: true, path: relPath, op: "rewrite" }));

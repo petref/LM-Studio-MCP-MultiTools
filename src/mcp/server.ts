@@ -14,9 +14,11 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 type GetRootFn = () => string;
+type IsTrustedAbsPathFn = (absPath: string) => boolean;
 
 export type MCPAttachOptions = {
   getRoot?: GetRootFn;
+  isTrustedAbsPath?: IsTrustedAbsPathFn;
 };
 
 // ===============================================================
@@ -43,6 +45,10 @@ async function withinRoot(getRoot: GetRootFn, relPath: string): Promise<string> 
     );
   }
   return abs;
+}
+
+function defaultIsTrustedAbsPath(_absPath: string): boolean {
+  return true;
 }
 
 // ===============================================================
@@ -138,8 +144,10 @@ export function parseSimplifiedPatch(raw: string): ParsedPatch {
         current.lines.push({ type: "add", text: line.slice(1) });
       } else if (line.startsWith("-") && !line.startsWith("---")) {
         current.lines.push({ type: "remove", text: line.slice(1) });
+      } else if (line.startsWith("\\")) {
+        // Ignore "\ No newline at end of file" markers.
       } else if (!line.startsWith("***") && !line.startsWith("@@")) {
-        current.lines.push({ type: "context", text: line });
+        current.lines.push({ type: "context", text: line.startsWith(" ") ? line.slice(1) : line });
       }
     }
   }
@@ -154,8 +162,11 @@ export function parseSimplifiedPatch(raw: string): ParsedPatch {
 // ===============================================================
 // Apply patch
 // ===============================================================
-async function applyParsedPatch(getRoot: GetRootFn, parsed: ParsedPatch): Promise<void> {
+async function applyParsedPatch(getRoot: GetRootFn, isTrustedAbsPath: IsTrustedAbsPathFn, parsed: ParsedPatch): Promise<void> {
   const abs = await withinRoot(getRoot, parsed.path);
+  if (!isTrustedAbsPath(abs)) {
+    throw new Error(`Refusing to write outside trusted roots: "${parsed.path}"`);
+  }
 
   if (parsed.op === "delete") {
     await fs.unlink(abs).catch(() => {});
@@ -175,6 +186,7 @@ async function applyParsedPatch(getRoot: GetRootFn, parsed: ParsedPatch): Promis
     throw new Error(`File not found for update: ${parsed.path}`);
   }
 
+  const hadTrailingNewline = original.endsWith("\n");
   let lines = original.replace(/\r\n/g, "\n").split("\n");
   let lineOffset = 0;
 
@@ -204,12 +216,18 @@ async function applyParsedPatch(getRoot: GetRootFn, parsed: ParsedPatch): Promis
     lineOffset += replace.length - h.oldRange.count;
   }
 
-  const finalText = lines.join("\n") + "\n";
+  let finalText = lines.join("\n");
+  if (hadTrailingNewline && !finalText.endsWith("\n")) {
+    finalText += "\n";
+  }
   await fs.writeFile(abs, finalText, "utf8");
 }
 
-async function rewriteFile(getRoot: GetRootFn, pathRel: string, content: string): Promise<void> {
+async function rewriteFile(getRoot: GetRootFn, isTrustedAbsPath: IsTrustedAbsPathFn, pathRel: string, content: string): Promise<void> {
   const abs = await withinRoot(getRoot, pathRel);
+  if (!isTrustedAbsPath(abs)) {
+    throw new Error(`Refusing to write outside trusted roots: "${pathRel}"`);
+  }
   await fs.mkdir(path.dirname(abs), { recursive: true });
   await fs.writeFile(abs, content ?? "", "utf8");
 }
@@ -219,6 +237,7 @@ async function rewriteFile(getRoot: GetRootFn, pathRel: string, content: string)
 // ===============================================================
 export function attachMCPToServer(server: any, opts: MCPAttachOptions = {}) {
   const getRoot = opts.getRoot || defaultGetRoot;
+  const isTrustedAbsPath = opts.isTrustedAbsPath || defaultIsTrustedAbsPath;
 
   server.on("request", async (req: any, res: any) => {
     if (req.method !== "POST") return;
@@ -230,7 +249,7 @@ export function attachMCPToServer(server: any, opts: MCPAttachOptions = {}) {
         try {
           const { patch } = JSON.parse(body || "{}");
           const parsed = parseSimplifiedPatch(String(patch || ""));
-          await applyParsedPatch(getRoot, parsed);
+          await applyParsedPatch(getRoot, isTrustedAbsPath, parsed);
 
           res.statusCode = 200;
           res.setHeader("Content-Type", "application/json");
@@ -253,7 +272,7 @@ export function attachMCPToServer(server: any, opts: MCPAttachOptions = {}) {
           if (typeof relPath !== "string" || !relPath.trim()) {
             throw new Error("Missing or invalid 'path' for rewrite_file");
           }
-          await rewriteFile(getRoot, relPath, typeof content === "string" ? content : "");
+          await rewriteFile(getRoot, isTrustedAbsPath, relPath, typeof content === "string" ? content : "");
 
           res.statusCode = 200;
           res.setHeader("Content-Type", "application/json");

@@ -1,308 +1,276 @@
-# 🧠 MCPS – Model Context Protocol Server & Bridge
-**Version:** 0.2.0  
-**Author:** Petre Florea  
-**Last Updated:** November 2025
+# LM Studio MCP MultiTools
 
----
+Local AI workspace for code-aware chat, controlled file operations, and multi-project session management.
 
-## 📘 Overview
+This project turns a local or self-hosted LLM endpoint into an operator that can inspect a repository, read and write files, search code, apply patches, and maintain multiple project/chat contexts through a browser dashboard. It is designed for local-first development workflows where teams want practical AI assistance without immediately moving code or prompts into a cloud IDE.
 
-This project provides a **local MCP (Model Context Protocol) Server** that can expose your local filesystem, diff, and shell tools to any LLM that supports the MCP standard — including **LM Studio**, **Ollama**, **OpenAI-compatible runtimes**, or custom AI agents.  
+## Executive Summary
 
-It also includes a **Bridge** that connects the MCP Server to an HTTP-compatible LLM endpoint (such as `http://localhost:1234/v1` for LM Studio).
+For a BA:
 
----
+- This is a local AI workbench for software delivery teams.
+- It lets a user point an LLM at a project folder and interact with that project through a governed chat interface.
+- It supports multiple projects, persistent chats, project profiles, root-folder validation, backup/restore, and live tool telemetry.
+- It is suitable for internal engineering enablement, local developer productivity, and controlled experimentation with AI-assisted code operations.
 
-## 🧩 Folder Structure
+For a CTO:
 
-```
-mcps-tight-ts/
-├── src/
-│   ├── bridge/bridge.ts        # Bridge between LLM and MCP Server
-│   ├── mcp/server.ts           # Core MCP server (Zod + SDK)
-│   └── types/shim.d.ts         # Module declarations
-├── dist/                       # Compiled JS files
-├── .env.example                # Environment template
-├── package.json                # Scripts, dependencies
-├── tsconfig.json               # TypeScript configuration
-└── README.md                   # You are here
-```
+- The core value is controlled local AI execution against a filesystem workspace.
+- The system wraps an OpenAI-compatible chat endpoint, adds a tool loop, and exposes a governance layer around file access and patching.
+- It provides a single-node local architecture with persistent runtime state, persistent UI state, trust-bound path enforcement, streaming telemetry, and test scripts.
+- It is closer to an operational prototype / internal platform foundation than a finished enterprise product.
 
----
+## What Problem It Solves
 
-## 🛠️ Tech Stack
+Most local LLM setups can answer questions, but they do not reliably operate on real project files with enough control around:
 
-- **TypeScript + Node 22+**
-- **@modelcontextprotocol/sdk@^1.21.x**
-- **Zod** for schema validation  
-- **dotenv** for environment configuration  
-- **diff** for unified file diffs  
-- **Child Process API** for controlled shell execution  
+- which folders are in scope
+- which edits are allowed
+- whether changes can be inspected before write
+- how project sessions persist across restarts
+- how users manage multiple repositories and chats
+- how operators observe tool usage and failures
 
----
+This project fills that gap by combining:
 
-## ⚙️ Environment Variables (`.env`)
+1. A dashboard UI for managing projects and chat sessions
+2. A server that runs the LLM conversation and tool-calling loop
+3. A controlled file/patch layer for repository operations
+4. Persistent local state for runtime configuration and UI workspace history
 
-Create a `.env` file (copy from `.env.example`):
+## What The Product Does Today
 
-```bash
-MCP_SERVER_NAME=mcps-tight-ts
-MCP_SERVER_VERSION=0.2.0
-MCP_ROOT_DIR=.
-MCP_TOOLS_ENABLED=true
-MCP_SHELL_ALLOWLIST=echo,node,pnpm,npm,cat,grep
-LMSTUDIO_URL=http://localhost:1234/v1
-LMSTUDIO_MODEL=qwen2.5-coder:7b-instruct
-```
+### 1. Multi-project AI workspace
 
-### Key Variables
+Users can create multiple projects, each with its own:
 
-| Variable | Description |
-|-----------|-------------|
-| `MCP_SERVER_NAME` | Custom name for the MCP server |
-| `MCP_SERVER_VERSION` | Version displayed to clients |
-| `MCP_ROOT_DIR` | Root path for file operations (sandboxed) |
-| `MCP_TOOLS_ENABLED` | Global on/off switch for all tools |
-| `MCP_SHELL_ALLOWLIST` | Comma-separated list of allowed shell commands |
-| `LMSTUDIO_URL` | Base URL for the LLM endpoint (LM Studio, Ollama, etc.) |
-| `LMSTUDIO_MODEL` | Model name to query from the endpoint |
+- root directory
+- model/API endpoint
+- MCP tools enabled/disabled flag
+- temperature
+- max tokens
+- trusted root list
+- pinned status
 
----
+Each project automatically maintains one or more chats with:
 
-## 🧰 Tools Available via MCP
+- persistent message history
+- pinned chats
+- archived chats
+- rename/delete/archive actions
+- bulk delete workflows
 
-Each tool is registered and validated with **Zod schemas** and can be called by LLMs or directly via the bridge.
+### 2. AI chat with tool-calling
 
-| Tool | Description | Input Example |
-|------|--------------|----------------|
-| `read_file` | Reads a UTF-8 text file under `MCP_ROOT_DIR` | `{ "path": "README.md" }` |
-| `diff_file` | Returns unified diff between old and new content | `{ "path": "file.ts", "new_content": "..." }` |
-| `apply_patch` | Overwrites file if SHA matches | `{ "path": "file.ts", "new_content": "...", "expected_sha256": "..." }` |
-| `run_command` | Executes allowlisted shell commands safely | `{ "cmd": "echo", "args": ["Hello"] }` |
+The dashboard sends prompts to an OpenAI-compatible `/chat/completions` endpoint and allows the model to call local tools for:
 
----
+- printing a project tree
+- reading files
+- reading line ranges from files
+- searching code
+- creating directories
+- creating files
+- rewriting files
+- applying patch payloads
 
-## 🧩 LLM Integration
+The system streams results back to the UI using SSE and emits:
 
-### 🔹 With LM Studio
+- `message`
+- `tool_call`
+- `tool_result`
+- `tool_done`
+- `retry`
+- `heartbeat`
+- `error`
+- `done`
 
-LM Studio uses `stdio` communication for MCPs.  
-Simply add this MCP in LM Studio’s **MCP configuration** (under *Tools / Extensions*).  
-The Bridge (`bridge.ts`) can spawn the server automatically.
+### 3. Controlled local file operations
 
-**Run:**
-```bash
-npm run bridge
-```
+The project includes guardrails around local access:
 
-Expected output:
-```
-[bridge] starting MCP server: node dist/mcp/server.js
-[bridge] LM Studio base: http://localhost:1234/v1, model: qwen2.5-coder:7b-instruct
-[bridge] ready
-```
+- project root enforcement
+- trusted root enforcement
+- path normalization
+- binary-file blocking for text reads
+- maximum file-size checks
+- line-span limits for chunk reads
+- payload-size limits on JSON requests
 
-Then LM Studio will start using this MCP as a local plugin for filesystem access and code manipulation.
+### 4. Operational dashboard
 
----
+The UI includes workspace-management features beyond a simple chat box:
 
-### 🔹 With Ollama or Other OpenAI-Compatible APIs
+- project and chat search
+- pinning workflows
+- archive workflows
+- recent roots discovery
+- folder validation and dry-run previews
+- backup and restore of UI state
+- session token support for protected endpoints
+- tool activity panel
+- performance metrics endpoint
+- token estimation in the composer
+- undo support for destructive UI actions
 
-If you want to use the **bridge** for other LLMs:
+## Representative Use Cases
 
-1. Edit `.env`:
-   ```bash
-   LMSTUDIO_URL=http://localhost:11434/v1
-   LMSTUDIO_MODEL=llama3.1:8b
-   ```
-2. Run:
-   ```bash
-   npm run bridge
-   ```
-3. The bridge will relay context, prompts, and MCP tool calls between your MCP server and that LLM.
+### Engineering productivity
 
----
+- local codebase exploration with an LLM
+- assisted refactors in trusted directories
+- patch-based changes generated from natural language
+- project-specific chat memory across sessions
 
-### 🔹 With Custom AI Clients
+### Team enablement
 
-If you’re writing your own client:
-- Connect to the MCP server via `stdio`.
-- Use the standard MCP request types:
-  - `tools/list`
-  - `tools/call`
-- Responses follow the MCP schema.
+- internal developer assistant for repositories that should stay local
+- standardized AI interface for teams already using LM Studio or another OpenAI-compatible local runtime
+- sandbox for evaluating model behavior before broader rollout
 
-You can also embed the bridge in your own Node project.
+### BA / product analysis support
 
----
+- inspect repository structures quickly
+- search for business rules or feature implementations in code
+- maintain separate chats per initiative or project
+- export/import project configurations for repeatable analysis setups
 
-## 🚀 Commands
+### Platform experimentation
 
-| Script | Action |
-|---------|---------|
-| `npm run build` | Compile TypeScript to `/dist` |
-| `npm run dev` | Hot-reload MCP server via `tsx` |
-| `npm run mcp` | Start MCP server standalone |
-| `npm run bridge` | Start bridge + spawn MCP server |
-| `npm run chat` | Simple test chat with the connected LLM |
+- foundation for a private coding copilot
+- wrapper around a self-hosted model endpoint
+- basis for adding approval flows, audit logs, SSO, or role-based controls later
 
----
+## Current Architecture
 
-## 🧩 How it Works (Architecture)
-
-```
-        ┌──────────────────────────────┐
-        │        LM Studio / LLM       │
-        └────────────┬─────────────────┘
-                     │  HTTP (Bridge)
-                     ▼
-          ┌──────────────────────────────┐
-          │         bridge.ts            │
-          │   ↳ spawns MCP server        │
-          │   ↳ connects to LLM API      │
-          └────────────┬─────────────────┘
-                     │  stdio (MCP)
-                     ▼
-          ┌──────────────────────────────┐
-          │         server.ts            │
-          │ Tools: read, diff, patch, sh │
-          │ Sandbox: MCP_ROOT_DIR        │
-          └──────────────────────────────┘
+```text
+Browser UI (src/control/index.html)
+        |
+        v
+Dashboard Server (src/control/server.ts)
+        |
+        +--> Runtime config (runtime.json)
+        +--> UI state store (db/ui_state.json)
+        +--> File and patch operations
+        +--> Tool loop / SSE streaming
+        |
+        v
+OpenAI-compatible LLM endpoint
+(LM Studio by default, but any compatible API can work)
 ```
 
----
+Supporting modules:
 
-## 🧩 Developing & Extending
+- `src/control/server.ts`: main application server, tool loop, API surface, SSE chat stream
+- `src/control/stateStore.ts`: persistent project/chat state management
+- `src/mcp/server.ts`: patch and rewrite HTTP endpoints with root/trust checks
+- `src/mcp/standalone.ts`: standalone HTTP server for patch endpoints and health
+- `src/runtime/index.ts`: runtime configuration loading and persistence
+- `src/chat/chat.ts`: CLI smoke-style chat client for the configured model endpoint
+- `src/bridge/bridge.ts`: minimal bridge process that spawns the standalone MCP server
 
-### Add a new tool
+## Tool Surface Available To The Model
 
-```ts
-registerTool({
-  name: 'list_json_files',
-  description: 'List all .json files under root',
-  schema: z.object({}),
-  async handler() {
-    const files = (await fs.readdir(ROOT_DIR)).filter(f => f.endsWith('.json'));
-    return { content: [{ type: 'text', text: JSON.stringify(files, null, 2) }] };
-  }
-});
-```
+The current tool catalog exposed by the dashboard chat loop is:
 
-### Add a new LLM backend
+- `repo_browser.print_tree(path)`
+- `repo_browser.read_file(path)`
+- `repo_browser.read_file_chunk(path, startLine, endLine)`
+- `repo_browser.search_code(query, globs?)`
+- `repo_browser.create_directory(path)`
+- `repo_browser.create_file(path, content)`
+- `repo_browser.apply_patch(patch)`
+- `repo_browser.rewrite_file(path, content)`
 
-Edit `.env`:
-```bash
-LMSTUDIO_URL=https://api.openai.com/v1
-LMSTUDIO_MODEL=gpt-4-turbo
-OPENAI_API_KEY=your-key
-```
-Then adapt the bridge to forward the API key in headers.
+Important implementation notes:
 
----
+- Retrieval tools are cached within a chat round to reduce repeated reads.
+- Write operations clear the retrieval cache.
+- Tool execution has a timeout.
+- The server aborts if the model exceeds the configured tool-call depth.
+- Invalid tool arguments are reported back into the conversation as tool results.
 
-## 🧩 Troubleshooting
+## Governance And Safety Model
 
-| Issue | Fix |
-|-------|-----|
-| `server.tool is not a function` | You’re on SDK 1.21.x; this version uses `setRequestHandler` instead. Fixed here. |
-| TypeScript complains about Zod types | Already resolved: Tool schemas now use `ZodTypeAny`. |
-| “Missing script: dev” | Added in this version; run `npm run dev`. |
-| LM Studio doesn’t detect MCP | Make sure the bridge is running *before* opening LM Studio. |
+This is one of the most important parts of the project.
 
----
+### Boundary controls
 
-## 🧭 Version Notes (Change Log)
+- Every project has a `rootDir`.
+- Every project also has `trustedRoots`.
+- Reads and writes are validated against the active workspace root.
+- Writes are additionally checked against trusted roots.
+- Absolute paths are normalized before comparison.
 
-| Version | Date | Notes |
-|----------|------|-------|
-| **0.2.0** | Nov 2025 | Rebuilt for SDK 1.21.x, Zod schemas, dotenv config, bridge improvements |
-| **0.1.0** | Oct 2025 | Initial PoC with direct `server.tool()` API |
+### Content controls
 
+- oversized text reads are blocked
+- likely-binary files are blocked
+- oversized JSON bodies are rejected early
+- file chunk reads are bounded
+- search results are capped
 
-## Chat + Dashboard UI (Current)
+### Operational controls
 
-The dashboard is now a full local workspace manager with:
-- project-based roots (each project has its own `rootDir`)
-- per-project profiles (`model`, `temperature`, `maxTokens`, MCP tools on/off)
-- project/chat pinning and menu actions (`⋯`)
-- chat archive and bulk-delete workflows
-- fuzzy search + highlight + pinned/recent/archived filters
-- root safety checks (`validate`, `dry-run`, health indicator)
-- tool activity panel (live `tool_call` / `tool_result` / `tool_done`)
-- backup/restore of UI state
-- optional token protection for API endpoints
+- optional dashboard auth token
+- explicit health endpoints
+- performance event capture
+- state backup and restore
+- dry-run validation for candidate roots
 
-### Start
-```bash
-npm install
-npm run dashboard
-# open http://localhost:8787/
-```
+### What this does not yet provide
 
-### Core Runtime Notes
-- Runtime state is persisted in `runtime.json`.
-- UI workspace state is persisted in `db/ui_state.json` (with `.bak` backup writes).
-- Project state schema is versioned (`version: 2`) and includes:
-  - project `pinned`
-  - project profile fields: `temperature`, `maxTokens`
-  - chat `archived`
+- user/role separation
+- immutable audit logging
+- approval workflow before every file write
+- external secrets management
+- enterprise authentication
+- container/Kubernetes production packaging
 
-### Dashboard Tabs
-- `Proj`: projects/chats, root management, import/backup
-- `Set`: model/profile/session token/settings
-- `Tools`: live tool telemetry stream
-- `Perf`: request/tool performance metrics
+## Product Maturity
 
-### Project & Chat Features
-- Projects:
-  - `⋯` menu: `Pin/Unpin`, `Duplicate`, `Export`, `Rename`, `Delete`
-  - Import project config from JSON
-  - Backup full UI state
-- Chats:
-  - `⋯` menu: `Pin/Unpin`, `Archive`, `Rename`, `Delete`
-  - Bulk delete by project (configurable archived/pinned inclusion server-side)
-- Search:
-  - fuzzy scoring
-  - query highlight
-  - filter mode (`all`, `pinned`, `recent`, and for chats `archived`)
+The codebase is functional and materially more capable than the original README suggests, but it should be evaluated as:
 
-### Root Safety & Onboarding
-- `Pick Folder` uses native Windows folder picker via server endpoint.
-- Root path validation checks:
-  - exists
-  - is directory
-  - readable
-  - writable
-- `Dry-run Root` previews entries and confirms access.
-- Recent roots endpoint suggests candidate directories from prior project roots and runtime root.
+- a strong internal tool
+- a local platform prototype
+- a base for a governed coding assistant
 
-### Chat QoL
-- `Regenerate` resends from last user prompt.
-- Retry button supports edit-and-resend via custom modal.
-- Optional message timestamps display in chat history.
-- SSE stream includes retries/errors and tool telemetry.
+It is not yet a hardened enterprise product.
 
-### Optional Access Control
-Set in `.env`:
-```bash
-DASHBOARD_AUTH_TOKEN=your-local-token
-```
-When set:
-- all non-public endpoints require token
-- send token via `x-dashboard-token` header (or `Authorization: Bearer ...`)
-- UI supports entering/storing session token locally
+### Strengths
 
-### API Endpoints (Dashboard Server)
+- practical end-to-end workflow already exists
+- state persistence is implemented
+- project isolation model exists
+- trust/root checks are implemented
+- streaming tool telemetry exists
+- smoke and RAG-style end-to-end tests exist
 
-#### State & Health
+### Gaps / limitations
+
+- no formal authentication/authorization model beyond a shared token
+- no database beyond local JSON state and included SQLite artifact
+- minimal bridge implementation
+- no packaging for multi-user deployment
+- no formal audit trail of file edits
+- no approval queue for model-generated changes
+- UI is single-file HTML/JS rather than a componentized frontend application
+
+For a CTO, the right framing is: this is a credible local-first AI ops shell for repositories, not yet a finished internal developer platform.
+
+## API Overview
+
+### State and health
+
 - `GET /`
 - `GET /healthz`
 - `GET /state`
 - `POST /state`
+- `GET /state/ui`
 - `POST /state/backup`
 - `POST /state/restore`
 
-#### Projects
+### Projects
+
 - `GET /projects`
 - `POST /projects`
 - `POST /projects/active`
@@ -312,7 +280,8 @@ When set:
 - `GET /projects/:id/export`
 - `POST /projects/import`
 
-#### Chats
+### Chats
+
 - `GET /projects/:id/chats?includeArchived=true|false`
 - `POST /projects/:id/chats`
 - `POST /projects/:id/chats/bulk-delete`
@@ -323,12 +292,14 @@ When set:
 - `POST /chats/:id/messages`
 - `POST /chats/:id/archive`
 
-#### Model / Chat Stream
+### Model interaction
+
 - `GET /models`
-- `POST /chat` (SSE, includes tool events)
+- `POST /chat` (SSE stream)
 - `POST /abort`
 
-#### Filesystem / Root Safety
+### Filesystem and trust checks
+
 - `POST /fs/read`
 - `POST /fs/write`
 - `POST /fs/pick-directory`
@@ -336,66 +307,206 @@ When set:
 - `POST /fs/dry-run-root`
 - `GET /fs/recent-roots`
 
-#### MCP HTTP Helpers
+### Patch helpers
+
 - `POST /mcp/apply_patch`
 - `POST /mcp/rewrite_file`
 
-#### Performance
+### Performance
+
 - `GET /perf?limit=N`
 
-### Environment Variables (Dashboard-Relevant)
-- `DASHBOARD_PORT` (default `8787`)
-- `LMSTUDIO_API_BASE` (default `http://localhost:1234/v1`)
-- `DASHBOARD_BASE` (default `http://localhost:${DASHBOARD_PORT}`)
-- `DASHBOARD_AUTH_TOKEN` (optional)
-- `TREE_CONCURRENCY`
-- `PERF_LOGS`
-- `PERF_EVENTS_MAX`
-- `TOOL_CALL_TIMEOUT_MS`
-- `UI_STATE_JSON`
-- `CHAT_MESSAGES_MAX`
+## Persistence Model
 
-### Developer Notes
-- The dashboard server is in `src/control/server.ts`.
-- Persistent state logic is in `src/control/stateStore.ts`.
-- Frontend is a single-file UI in `src/control/index.html`.
-- Build:
+The application stores data locally in files.
+
+- `runtime.json`: active runtime settings such as root, API base, model, and MCP enabled flag
+- `db/ui_state.json`: persistent UI state for projects, chats, pinned flags, archive flags, and settings
+- `db/ui_state.json.bak`: backup copy written during state writes
+
+Current UI state schema version:
+
+- `version: 3`
+
+## Compatibility
+
+The server is built around OpenAI-compatible chat APIs.
+
+Default target:
+
+- LM Studio at `http://localhost:1234/v1`
+
+Other likely-compatible targets:
+
+- Ollama instances exposing OpenAI-compatible routes
+- private gateway services that implement `/chat/completions`
+- self-hosted inference layers exposing OpenAI-style APIs
+
+## Installation And Local Start
+
+### Prerequisites
+
+- Node.js
+- npm
+- a reachable OpenAI-compatible LLM endpoint
+
+### Install
+
+```bash
+npm install
+```
+
+### Configure
+
+Copy `.env.example` to `.env` and adjust values for your environment.
+
+Typical values:
+
+```bash
+LMSTUDIO_API_BASE=http://localhost:1234/v1
+LMSTUDIO_API_KEY=lm-studio
+LMSTUDIO_MODEL=qwen2.5-coder:7b-instruct
+MCP_ROOT_DIR=.
+RUNTIME_JSON=runtime.json
+MCP_TOOLS_ENABLED=true
+```
+
+### Run the dashboard
+
+```bash
+npm run dashboard
+```
+
+Open:
+
+- [http://localhost:8787](http://localhost:8787)
+
+### Build TypeScript
+
 ```bash
 npm run build
 ```
 
-## Dashboard Enhancements (April 14, 2026)
+### Start the standalone MCP HTTP server
 
-### Implemented
-- fixed project profile persistence bug:
-  - `temperature` and `maxTokens` now persist on project update
-- chat send now uses active project temperature instead of fixed `0.2`
-- explicit SSE completion event:
-  - server emits `event: done` with status (`done` / `aborted` / `error`)
-  - client consumes `done` and added stream watchdog timeout fallback
-- request body hardening:
-  - request-size cap via `MAX_JSON_BODY_BYTES` (default `1048576`)
-  - early reject on oversized `content-length`
-- XSS hardening:
-  - escaped code-block language attribute (`data-lang`)
-- virtualized rendering for project/chat lists (better scaling on large datasets)
-- modal keyboard UX improvement:
-  - Enter behavior is safer in textareas (`Ctrl/Cmd+Enter` to submit)
-- undo for destructive actions:
-  - snapshot-based undo snackbar for project/chat delete, archive, bulk delete
-- root trust policy:
-  - per-project `trustedRoots` allowlist
-  - health line includes trust state (`trusted` / `untrusted`)
-  - untrusted root changes require explicit `TRUST` confirmation
-- token counter:
-  - composer shows estimated input/output tokens in real time
-- added smoke test script:
-  - `npm run test:e2e:smoke`
+```bash
+npm run mcp
+```
 
-### New/Updated API Notes
-- `GET /state/ui`: returns full UI state snapshot (used by undo/restore)
-- `POST /chat` SSE now includes `done` event
+### Run the simple CLI chat client
 
-### Updated State Schema
-- UI state version is now `3`
-- project fields now include `trustedRoots: string[]`
+```bash
+npm run chat -- "Summarize this repository"
+```
+
+### Start the bridge process
+
+```bash
+npm run bridge
+```
+
+Note: the current bridge is minimal. It spawns the MCP standalone process and logs child output, but it is not yet a full orchestration layer for production agent workflows.
+
+## Environment Variables
+
+### Core LLM settings
+
+- `LMSTUDIO_API_BASE`: base URL for the OpenAI-compatible API
+- `LMSTUDIO_API_KEY`: bearer token
+- `LMSTUDIO_MODEL`: default model
+- `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`: legacy/bridge-oriented alternatives
+
+### Runtime and filesystem
+
+- `MCP_ROOT_DIR`: default filesystem root
+- `RUNTIME_JSON`: runtime config path
+- `MCP_TOOLS_ENABLED`: enable/disable tool usage
+
+### Dashboard server
+
+- `DASHBOARD_PORT`: dashboard port, default `8787`
+- `DASHBOARD_BASE`: dashboard base URL used for internal helper calls
+- `DASHBOARD_AUTH_TOKEN`: optional shared token for non-public endpoints
+
+### Guardrails and limits
+
+- `TOOL_CALL_TIMEOUT_MS`
+- `TREE_CONCURRENCY`
+- `MAX_JSON_BODY_BYTES`
+- `MAX_READ_FILE_BYTES`
+- `MAX_CHUNK_LINE_SPAN`
+- `MAX_SEARCH_RESULTS`
+- `MAX_SEARCH_RESULTS_PER_FILE`
+- `CHAT_MESSAGES_MAX`
+
+### Observability
+
+- `PERF_LOGS`
+- `PERF_EVENTS_MAX`
+
+### UI persistence
+
+- `UI_STATE_JSON`
+
+## Testing
+
+Available scripts:
+
+- `npm run test:e2e:smoke`
+- `npm run test:e2e:rag`
+
+What they cover:
+
+- dashboard health and HTML sanity
+- project and chat lifecycle basics
+- state restore flow
+- SSE `done` event behavior
+- CRLF event parsing
+- invalid tool argument handling
+- multi-hunk patch application
+- tool-call depth guard
+- root escape prevention
+- retrieval tool behavior
+
+## Repository Structure
+
+```text
+src/
+  bridge/
+    bridge.ts
+  chat/
+    chat.ts
+  control/
+    index.html
+    server.ts
+    stateStore.ts
+  mcp/
+    server.ts
+    standalone.ts
+  runtime/
+    index.ts
+  types/
+    shim.d.ts
+scripts/
+  e2e-smoke.mjs
+  rag-e2e.mjs
+db/
+  rag/
+    mem.sqlite
+runtime.json
+```
+
+## Recommended Next Steps If You Want To Productize It
+
+1. Add user identity, roles, and per-project authorization.
+2. Add approval gates and immutable audit logs for file writes.
+3. Replace shared-token auth with SSO or gateway auth.
+4. Move state from JSON files to a service-grade store.
+5. Separate UI into a maintainable frontend application.
+6. Add deployment packaging and operational docs.
+7. Expand tests around failure modes and write safety.
+8. Formalize the bridge or remove it in favor of the dashboard runtime as the main product surface.
+
+## Bottom Line
+
+This project already demonstrates a useful pattern: a local AI coding workspace that adds structure, persistence, and control on top of an OpenAI-compatible model endpoint. For business stakeholders, it shows how AI-assisted engineering can be made usable in a local environment. For technical leadership, it provides a strong prototype for a governed internal coding assistant, with clear next steps to harden it into a platform.
